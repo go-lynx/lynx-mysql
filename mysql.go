@@ -1,10 +1,10 @@
 package mysql
 
 import (
-	"github.com/go-lynx/lynx/app/log"
+	"github.com/go-lynx/lynx-sql-sdk/base"
+	"github.com/go-lynx/lynx-sql-sdk/interfaces"
+	"github.com/go-lynx/lynx/log"
 	"github.com/go-lynx/lynx/plugins"
-	"github.com/go-lynx/lynx/plugins/sql/base"
-	"github.com/go-lynx/lynx/plugins/sql/interfaces"
 
 	// MySQL driver
 	_ "github.com/go-sql-driver/mysql"

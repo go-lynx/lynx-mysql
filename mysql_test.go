@@ -6,8 +6,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/go-lynx/lynx-sql-sdk/interfaces"
 	"github.com/go-lynx/lynx/plugins"
-	"github.com/go-lynx/lynx/plugins/sql/interfaces"
 )
 
 // mockRuntime is a mock implementation of plugins.Runtime for testing
@@ -93,11 +93,11 @@ func TestDBMysqlClient_StartupTasks(t *testing.T) {
 	client := NewMysqlClient()
 
 	config := &interfaces.Config{
-		Driver:              "mysql",
-		DSN:                 "root:password@tcp(localhost:3306)/testdb?charset=utf8mb4&parseTime=True",
-		MaxOpenConns:        10,
-		MaxIdleConns:        5,
-		HealthCheckInterval: 0,
+		Driver:                "mysql",
+		DSN:                   "root:password@tcp(localhost:3306)/testdb?charset=utf8mb4&parseTime=True",
+		MaxOpenConns:          10,
+		MaxIdleConns:          5,
+		HealthCheckInterval:   0,
 		AutoReconnectInterval: 0,
 	}
 
@@ -129,11 +129,11 @@ func TestDBMysqlClient_CleanupTasks(t *testing.T) {
 	client := NewMysqlClient()
 
 	config := &interfaces.Config{
-		Driver:              "mysql",
-		DSN:                 "user:password@tcp(localhost:3306)/testdb",
-		MaxOpenConns:        10,
-		MaxIdleConns:        5,
-		HealthCheckInterval: 0,
+		Driver:                "mysql",
+		DSN:                   "user:password@tcp(localhost:3306)/testdb",
+		MaxOpenConns:          10,
+		MaxIdleConns:          5,
+		HealthCheckInterval:   0,
 		AutoReconnectInterval: 0,
 	}
 
@@ -186,11 +186,11 @@ func TestDBMysqlClient_GetDialect(t *testing.T) {
 	client := NewMysqlClient()
 
 	config := &interfaces.Config{
-		Driver:              "mysql",
-		DSN:                 "user:password@tcp(localhost:3306)/testdb",
-		MaxOpenConns:        10,
-		MaxIdleConns:        5,
-		HealthCheckInterval: 0,
+		Driver:                "mysql",
+		DSN:                   "user:password@tcp(localhost:3306)/testdb",
+		MaxOpenConns:          10,
+		MaxIdleConns:          5,
+		HealthCheckInterval:   0,
 		AutoReconnectInterval: 0,
 	}
 
@@ -283,11 +283,11 @@ func TestDBMysqlClient_ConcurrentAccess(t *testing.T) {
 	client := NewMysqlClient()
 
 	config := &interfaces.Config{
-		Driver:              "mysql",
-		DSN:                 "user:password@tcp(localhost:3306)/testdb",
-		MaxOpenConns:        20,
-		MaxIdleConns:        10,
-		HealthCheckInterval: 0,
+		Driver:                "mysql",
+		DSN:                   "user:password@tcp(localhost:3306)/testdb",
+		MaxOpenConns:          20,
+		MaxIdleConns:          10,
+		HealthCheckInterval:   0,
 		AutoReconnectInterval: 0,
 	}
 
@@ -320,11 +320,11 @@ func TestDBMysqlClient_ContextSupport(t *testing.T) {
 	client := NewMysqlClient()
 
 	config := &interfaces.Config{
-		Driver:              "mysql",
-		DSN:                 "user:password@tcp(localhost:3306)/testdb",
-		MaxOpenConns:        10,
-		MaxIdleConns:        5,
-		HealthCheckInterval: 0,
+		Driver:                "mysql",
+		DSN:                   "user:password@tcp(localhost:3306)/testdb",
+		MaxOpenConns:          10,
+		MaxIdleConns:          5,
+		HealthCheckInterval:   0,
 		AutoReconnectInterval: 0,
 	}
 
@@ -359,11 +359,11 @@ func TestDBMysqlClient_TimeoutHandling(t *testing.T) {
 	client := NewMysqlClient()
 
 	config := &interfaces.Config{
-		Driver:              "mysql",
-		DSN:                 "user:password@tcp(localhost:3306)/testdb",
-		MaxOpenConns:        10,
-		MaxIdleConns:        5,
-		HealthCheckInterval: 0,
+		Driver:                "mysql",
+		DSN:                   "user:password@tcp(localhost:3306)/testdb",
+		MaxOpenConns:          10,
+		MaxIdleConns:          5,
+		HealthCheckInterval:   0,
 		AutoReconnectInterval: 0,
 	}
 
@@ -407,4 +407,3 @@ func TestDBMysqlClient_PluginMetadata(t *testing.T) {
 		t.Errorf("Expected plugin description '%s', got '%s'", pluginDescription, client.Description())
 	}
 }
-

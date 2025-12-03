@@ -4,8 +4,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/go-lynx/lynx/plugins/sql/base"
-	"github.com/go-lynx/lynx/plugins/sql/mysql/conf"
+	"github.com/go-lynx/lynx-mysql/conf"
+	"github.com/go-lynx/lynx-sql-sdk/base"
 	"github.com/prometheus/client_golang/prometheus"
 )
 

@@ -10,9 +10,9 @@ import (
 	"time"
 
 	"github.com/go-kratos/kratos/v2/config"
-	"github.com/go-lynx/lynx/app"
+	"github.com/go-lynx/lynx"
+	"github.com/go-lynx/lynx-sql-sdk/interfaces"
 	"github.com/go-lynx/lynx/plugins"
-	"github.com/go-lynx/lynx/plugins/sql/interfaces"
 )
 
 // TestMySQLIntegration tests MySQL plugin with real database connection
@@ -229,20 +229,20 @@ func createTestRuntime(t *testing.T) plugins.Runtime {
 	mockConfig := &mockConfig{
 		values: map[string]interface{}{
 			"lynx.mysql": &interfaces.Config{
-				Driver:              "mysql",
-				DSN:                 "lynx:lynx123456@tcp(localhost:3306)/lynx_test?charset=utf8mb4&parseTime=True",
-				MaxOpenConns:        10,
-				MaxIdleConns:        5,
-				ConnMaxLifetime:     3600,
-				ConnMaxIdleTime:     300,
-				HealthCheckInterval: 0,
+				Driver:                "mysql",
+				DSN:                   "lynx:lynx123456@tcp(localhost:3306)/lynx_test?charset=utf8mb4&parseTime=True",
+				MaxOpenConns:          10,
+				MaxIdleConns:          5,
+				ConnMaxLifetime:       3600,
+				ConnMaxIdleTime:       300,
+				HealthCheckInterval:   0,
 				AutoReconnectInterval: 0,
 			},
 		},
 	}
 
 	// Create runtime
-	rt := app.NewTypedRuntimePlugin()
+	rt := lynx.NewTypedRuntimePlugin()
 	rt.SetConfig(mockConfig)
 
 	return rt
@@ -305,4 +305,3 @@ func (m *mockConfig) Watch(key string, o config.Observer) error {
 func (m *mockConfig) Close() error {
 	return nil
 }
-
