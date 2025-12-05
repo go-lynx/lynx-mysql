@@ -4,6 +4,7 @@ import (
 	"database/sql"
 	"fmt"
 
+	entsql "entgo.io/ent/dialect/sql"
 	"github.com/go-lynx/lynx"
 	"github.com/go-lynx/lynx-sql-sdk/interfaces"
 	"github.com/go-lynx/lynx/pkg/factory"
@@ -64,4 +65,17 @@ func CheckHealth() error {
 		return sqlPlugin.CheckHealth()
 	}
 	return fmt.Errorf("plugin %s is not a SQLPlugin", pluginName)
+}
+
+// GetDriver gets the ent SQL driver from the MySQL plugin
+// Returns an error if the database connection cannot be obtained
+func GetDriver() (*entsql.Driver, error) {
+	db, err := GetDB()
+	if err != nil {
+		return nil, fmt.Errorf("failed to get database connection: %w", err)
+	}
+	if db == nil {
+		return nil, fmt.Errorf("database connection is nil")
+	}
+	return entsql.OpenDB(GetDialect(), db), nil
 }

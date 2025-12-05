@@ -1,6 +1,9 @@
 package mysql
 
 import (
+	"fmt"
+
+	"github.com/go-lynx/lynx-mysql/conf"
 	"github.com/go-lynx/lynx-sql-sdk/base"
 	"github.com/go-lynx/lynx-sql-sdk/interfaces"
 	"github.com/go-lynx/lynx/log"
@@ -21,7 +24,8 @@ const (
 // DBMysqlClient represents MySQL client plugin instance
 type DBMysqlClient struct {
 	*base.SQLPlugin
-	config *interfaces.Config
+	config   *interfaces.Config
+	pbConfig *conf.Mysql // protobuf configuration
 }
 
 // NewMysqlClient creates a new MySQL client plugin instance
@@ -39,7 +43,8 @@ func NewMysqlClient() *DBMysqlClient {
 	}
 
 	c := &DBMysqlClient{
-		config: config,
+		config:   config,
+		pbConfig: &conf.Mysql{},
 	}
 
 	c.SQLPlugin = base.NewBaseSQLPlugin(
@@ -53,6 +58,64 @@ func NewMysqlClient() *DBMysqlClient {
 	)
 
 	return c
+}
+
+// InitializeResources loads protobuf configuration and initializes resources
+func (m *DBMysqlClient) InitializeResources(rt plugins.Runtime) error {
+	// Load protobuf configuration to a temporary variable first
+	// This ensures we don't partially update m.pbConfig if loading fails
+	pbConfig := &conf.Mysql{}
+	if err := rt.GetConfig().Value(confPrefix).Scan(pbConfig); err != nil {
+		return fmt.Errorf("failed to load MySQL configuration: %w", err)
+	}
+
+	// Only update m.pbConfig after successful loading
+	m.pbConfig = pbConfig
+
+	// Update interfaces.Config from protobuf config
+	// This ensures atomic update - either all fields are updated or none
+	m.config.Driver = pbConfig.Driver
+
+	// Support both 'source' (protobuf field) and 'dsn' (common alias)
+	// Configuration system may map 'dsn' to 'source' automatically
+	if pbConfig.Source != "" {
+		m.config.DSN = pbConfig.Source
+	}
+
+	// Map max_conn to MaxOpenConns (maximum open connections)
+	if pbConfig.MaxConn > 0 {
+		m.config.MaxOpenConns = int(pbConfig.MaxConn)
+	}
+
+	// Map min_conn to MaxIdleConns (maximum idle connections)
+	// Also enable warmup to pre-create connections if min_conn is set
+	if pbConfig.MinConn > 0 {
+		m.config.MaxIdleConns = int(pbConfig.MinConn)
+		// Enable connection pool warmup to pre-create connections up to min_conn
+		m.config.WarmupEnabled = true
+		m.config.WarmupConns = int(pbConfig.MinConn)
+	}
+
+	// Handle max_idle_conn if explicitly set (takes precedence over min_conn)
+	if pbConfig.MaxIdleConn > 0 {
+		m.config.MaxIdleConns = int(pbConfig.MaxIdleConn)
+		// Update warmup count if not already set by min_conn
+		if pbConfig.MinConn == 0 {
+			m.config.WarmupEnabled = true
+			m.config.WarmupConns = int(pbConfig.MaxIdleConn)
+		}
+	}
+
+	// Handle duration fields
+	if pbConfig.MaxLifeTime != nil {
+		m.config.ConnMaxLifetime = int(pbConfig.MaxLifeTime.AsDuration().Seconds())
+	}
+	if pbConfig.MaxIdleTime != nil {
+		m.config.ConnMaxIdleTime = int(pbConfig.MaxIdleTime.AsDuration().Seconds())
+	}
+
+	// Call parent initialization to set defaults and validate
+	return m.SQLPlugin.InitializeResources(rt)
 }
 
 // StartupTasks initializes database connection
