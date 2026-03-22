@@ -1,6 +1,7 @@
 package mysql
 
 import (
+	"context"
 	"database/sql"
 	"fmt"
 
@@ -10,6 +11,8 @@ import (
 	"github.com/go-lynx/lynx/pkg/factory"
 	"github.com/go-lynx/lynx/plugins"
 )
+
+type dbProvider struct{}
 
 // init function registers the MySQL plugin to the global plugin factory.
 // This function is automatically called when the package is imported.
@@ -21,6 +24,9 @@ func init() {
 
 // GetDB gets the database connection from the MySQL plugin
 func GetDB() (*sql.DB, error) {
+	if lynx.Lynx() == nil {
+		return nil, fmt.Errorf("lynx not initialized")
+	}
 	plugin := lynx.Lynx().GetPluginManager().GetPlugin(pluginName)
 	if plugin == nil {
 		return nil, fmt.Errorf("plugin %s not found", pluginName)
@@ -31,8 +37,47 @@ func GetDB() (*sql.DB, error) {
 	return nil, fmt.Errorf("plugin %s is not a SQLPlugin", pluginName)
 }
 
+// GetDBWithContext gets the database connection from the MySQL plugin with context support.
+func GetDBWithContext(ctx context.Context) (*sql.DB, error) {
+	if lynx.Lynx() == nil {
+		return nil, fmt.Errorf("lynx not initialized")
+	}
+	plugin := lynx.Lynx().GetPluginManager().GetPlugin(pluginName)
+	if plugin == nil {
+		return nil, fmt.Errorf("plugin %s not found", pluginName)
+	}
+	if sqlPlugin, ok := plugin.(interfaces.SQLPlugin); ok {
+		return sqlPlugin.GetDBWithContext(ctx)
+	}
+	return nil, fmt.Errorf("plugin %s is not a SQLPlugin", pluginName)
+}
+
+// GetValidatedConn returns a validated connection from the current MySQL pool.
+func GetValidatedConn(ctx context.Context) (*sql.Conn, error) {
+	if lynx.Lynx() == nil {
+		return nil, fmt.Errorf("lynx not initialized")
+	}
+	plugin := lynx.Lynx().GetPluginManager().GetPlugin(pluginName)
+	if plugin == nil {
+		return nil, fmt.Errorf("plugin %s not found", pluginName)
+	}
+	if sqlPlugin, ok := plugin.(interfaces.SQLPlugin); ok {
+		return sqlPlugin.GetValidatedConn(ctx)
+	}
+	return nil, fmt.Errorf("plugin %s is not a SQLPlugin", pluginName)
+}
+
+// GetProvider returns a stable provider for the current MySQL pool.
+// The provider does not hold a concrete *sql.DB; each call resolves the current pool so it remains valid after reconnect.
+func GetProvider() interfaces.DBProvider {
+	return dbProvider{}
+}
+
 // GetDialect gets the database dialect
 func GetDialect() string {
+	if lynx.Lynx() == nil {
+		return ""
+	}
 	plugin := lynx.Lynx().GetPluginManager().GetPlugin(pluginName)
 	if plugin == nil {
 		return ""
@@ -45,6 +90,9 @@ func GetDialect() string {
 
 // IsConnected checks if the database is connected
 func IsConnected() bool {
+	if lynx.Lynx() == nil {
+		return false
+	}
 	plugin := lynx.Lynx().GetPluginManager().GetPlugin(pluginName)
 	if plugin == nil {
 		return false
@@ -57,6 +105,9 @@ func IsConnected() bool {
 
 // CheckHealth performs health check
 func CheckHealth() error {
+	if lynx.Lynx() == nil {
+		return fmt.Errorf("lynx not initialized")
+	}
 	plugin := lynx.Lynx().GetPluginManager().GetPlugin(pluginName)
 	if plugin == nil {
 		return fmt.Errorf("plugin %s not found", pluginName)
@@ -67,8 +118,21 @@ func CheckHealth() error {
 	return fmt.Errorf("plugin %s is not a SQLPlugin", pluginName)
 }
 
-// GetDriver gets the ent SQL driver from the MySQL plugin
-// Returns an error if the database connection cannot be obtained
+func (dbProvider) DB(ctx context.Context) (*sql.DB, error) {
+	return GetDBWithContext(ctx)
+}
+
+func (dbProvider) ValidatedConn(ctx context.Context) (*sql.Conn, error) {
+	return GetValidatedConn(ctx)
+}
+
+func (dbProvider) Dialect() string {
+	return GetDialect()
+}
+
+// GetDriver gets the ent SQL driver from the MySQL plugin.
+// Returns an error if the database connection cannot be obtained.
+// Do not cache the returned driver when auto-reconnect is enabled; prefer GetDriverProvider for long-lived components.
 func GetDriver() (*entsql.Driver, error) {
 	db, err := GetDB()
 	if err != nil {
@@ -78,4 +142,20 @@ func GetDriver() (*entsql.Driver, error) {
 		return nil, fmt.Errorf("database connection is nil")
 	}
 	return entsql.OpenDB(GetDialect(), db), nil
+}
+
+// GetDriverProvider returns a stable provider for ent SQL drivers.
+// The returned closure resolves the current pool on each call and should be preferred over caching GetDriver().
+func GetDriverProvider() func(ctx context.Context) (*entsql.Driver, error) {
+	provider := GetProvider()
+	return func(ctx context.Context) (*entsql.Driver, error) {
+		db, err := provider.DB(ctx)
+		if err != nil {
+			return nil, fmt.Errorf("failed to get database connection: %w", err)
+		}
+		if db == nil {
+			return nil, fmt.Errorf("database connection is nil")
+		}
+		return entsql.OpenDB(provider.Dialect(), db), nil
+	}
 }
