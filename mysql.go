@@ -16,7 +16,7 @@ import (
 // Plugin metadata
 const (
 	pluginName        = "mysql.client"
-	pluginVersion     = "v1.6.0-beta"
+	pluginVersion     = "v1.5.4"
 	pluginDescription = "mysql client plugin for lynx framework"
 	confPrefix        = "lynx.mysql"
 )

@@ -65,15 +65,12 @@ The plugin follows the Lynx framework's layered architecture:
 lynx:
   mysql:
     driver: "mysql"
-    dsn: "user:password@tcp(localhost:3306)/database?charset=utf8mb4&parseTime=True&loc=Local"
+    source: "user:password@tcp(localhost:3306)/database?charset=utf8mb4&parseTime=True&loc=Local"
     min_conn: 5
     max_conn: 20
+    max_idle_conn: 5
     max_idle_time: 300s
     max_life_time: 3600s
-    conn_max_idle_time: 300s
-    conn_max_lifetime: 3600s
-    health_check_interval: 30s
-    health_check_query: "SELECT 1"
 ```
 
 ### Advanced Configuration
@@ -82,51 +79,29 @@ lynx:
 lynx:
   mysql:
     driver: "mysql"
-    dsn: "user:password@tcp(localhost:3306)/database?charset=utf8mb4&parseTime=True&loc=Local&tls=true"
+    source: "user:password@tcp(db.internal:3306)/app?charset=utf8mb4&parseTime=True&loc=Local&tls=true&timeout=10s&readTimeout=30s&writeTimeout=30s"
     min_conn: 10
     max_conn: 100
+    max_idle_conn: 20
     max_idle_time: 300s
     max_life_time: 3600s
-    conn_max_idle_time: 300s
-    conn_max_lifetime: 3600s
-    
-    # Performance tuning
-    max_open_conns: 100
-    max_idle_conns: 10
-    
-    # Timeouts
-    connect_timeout: 10s
-    read_timeout: 30s
-    write_timeout: 30s
-    
-    # Health monitoring
-    health_check_interval: 30s
-    health_check_query: "SELECT 1"
-    health_check_timeout: 5s
-    
-    # SSL/TLS configuration
-    tls:
-      enabled: true
-      skip_verify: false
-      cert_file: "/path/to/client-cert.pem"
-      key_file: "/path/to/client-key.pem"
-      ca_file: "/path/to/ca-cert.pem"
-    
-    # Connection pool settings
-    pool:
-      max_open_conns: 100
-      max_idle_conns: 10
-      conn_max_idle_time: 300s
-      conn_max_lifetime: 3600s
-      conn_max_lifetime_jitter: 1m
-    
-    # Monitoring
-    monitoring:
-      enable_metrics: true
-      metrics_path: "/metrics"
-      slow_query_threshold: 1s
-      enable_slow_query_log: true
 ```
+
+The protobuf schema uses `source` as the DSN field name. Some config loaders may also accept `dsn` as an alias, but `source` is the canonical key defined in `conf/mysql.proto`.
+
+### Proto Configuration Reference
+
+| Field | Proto Type | Default Value | Example | Notes |
+|-------|------------|---------------|---------|-------|
+| `driver` | `string` | `"mysql"` | `"mysql"` | MySQL driver name used by the plugin. |
+| `source` | `string` | required | `"user:password@tcp(localhost:3306)/app?charset=utf8mb4&parseTime=True&loc=Local"` | Standard MySQL DSN. Put charset, TLS, and timeout tuning in DSN query parameters. |
+| `min_conn` | `int32` | `0` | `5` | When greater than `0`, the plugin warms up that many idle connections. If omitted, the runtime keeps the plugin default idle pool size of `5` without warmup. |
+| `max_conn` | `int32` | `25` | `20` | Maximum number of open connections. |
+| `max_life_time` | `google.protobuf.Duration` | `"3600s"` | `"3600s"` | Maximum lifetime of a pooled connection. |
+| `max_idle_time` | `google.protobuf.Duration` | `"300s"` | `"300s"` | Maximum idle lifetime of a pooled connection. |
+| `max_idle_conn` | `int32` | `0` | `10` | Explicit idle connection cap. Overrides `min_conn` for idle pool sizing when set. |
+
+Durations use protobuf/Kratos duration syntax such as `"30s"`, `"5m"`, or `"1h"`.
 
 ## Usage
 

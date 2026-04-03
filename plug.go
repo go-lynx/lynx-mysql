@@ -12,6 +12,13 @@ import (
 	"github.com/go-lynx/lynx/plugins"
 )
 
+// DBProvider resolves the current pool on each call so callers do not cache a stale *sql.DB across reconnects.
+type DBProvider interface {
+	DB(ctx context.Context) (*sql.DB, error)
+	ValidatedConn(ctx context.Context) (*sql.Conn, error)
+	Dialect() string
+}
+
 type dbProvider struct{}
 
 // init function registers the MySQL plugin to the global plugin factory.
@@ -54,22 +61,27 @@ func GetDBWithContext(ctx context.Context) (*sql.DB, error) {
 
 // GetValidatedConn returns a validated connection from the current MySQL pool.
 func GetValidatedConn(ctx context.Context) (*sql.Conn, error) {
-	if lynx.Lynx() == nil {
-		return nil, fmt.Errorf("lynx not initialized")
+	db, err := GetDBWithContext(ctx)
+	if err != nil {
+		return nil, err
 	}
-	plugin := lynx.Lynx().GetPluginManager().GetPlugin(pluginName)
-	if plugin == nil {
-		return nil, fmt.Errorf("plugin %s not found", pluginName)
+	if db == nil {
+		return nil, fmt.Errorf("database connection is nil")
 	}
-	if sqlPlugin, ok := plugin.(interfaces.SQLPlugin); ok {
-		return sqlPlugin.GetValidatedConn(ctx)
+	conn, err := db.Conn(ctx)
+	if err != nil {
+		return nil, err
 	}
-	return nil, fmt.Errorf("plugin %s is not a SQLPlugin", pluginName)
+	if err := conn.PingContext(ctx); err != nil {
+		_ = conn.Close()
+		return nil, err
+	}
+	return conn, nil
 }
 
 // GetProvider returns a stable provider for the current MySQL pool.
 // The provider does not hold a concrete *sql.DB; each call resolves the current pool so it remains valid after reconnect.
-func GetProvider() interfaces.DBProvider {
+func GetProvider() DBProvider {
 	return dbProvider{}
 }
 
