@@ -27,7 +27,7 @@ The MySQL Plugin provides comprehensive MySQL database integration for the Lynx 
 ### Configuration Management
 - **Flexible Configuration**: YAML and JSON configuration support
 - **Environment-Specific**: Different configurations for dev, staging, and production
-- **Hot Reloading**: Runtime configuration updates without restart
+- **Deterministic Reinitialization**: Repeated `InitializeResources` rebuilds from defaults instead of reusing stale in-memory config fields
 - **Validation**: Automatic configuration validation and error reporting
 
 ## Architecture
@@ -64,7 +64,7 @@ The plugin follows the Lynx framework's layered architecture:
 ```yaml
 lynx:
   mysql:
-    driver: "mysql"
+    # driver defaults to "mysql" when omitted
     source: "user:password@tcp(localhost:3306)/database?charset=utf8mb4&parseTime=True&loc=Local"
     min_conn: 5
     max_conn: 20
@@ -78,7 +78,6 @@ lynx:
 ```yaml
 lynx:
   mysql:
-    driver: "mysql"
     source: "user:password@tcp(db.internal:3306)/app?charset=utf8mb4&parseTime=True&loc=Local&tls=true&timeout=10s&readTimeout=30s&writeTimeout=30s"
     min_conn: 10
     max_conn: 100
@@ -88,6 +87,7 @@ lynx:
 ```
 
 The protobuf schema uses `source` as the DSN field name. Some config loaders may also accept `dsn` as an alias, but `source` is the canonical key defined in `conf/mysql.proto`.
+The plugin creates a private Prometheus registry at runtime and exposes it through `GetMetricsGatherer()`. There is currently no `lynx.mysql.prometheus` config block: namespace/subsystem are fixed to `lynx/mysql`, and custom labels are not configurable in this runtime line.
 
 ### Proto Configuration Reference
 
@@ -112,25 +112,26 @@ package main
 
 import (
     "context"
-    "database/sql"
-    "github.com/go-lynx/lynx/plugins/sql/mysql"
+    "fmt"
+    "time"
+
+    "github.com/go-lynx/lynx-mysql"
 )
 
 func main() {
-    // Get the MySQL client instance
-    mysqlClient := mysql.GetMysqlClient()
-    
-    // Get the underlying database connection
-    db := mysql.GetMysqlDB()
-    
-    // Execute a simple query
-    ctx := context.Background()
-    var result string
-    err := db.QueryRowContext(ctx, "SELECT VERSION()").Scan(&result)
+    ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+    defer cancel()
+
+    db, err := mysql.GetDBWithContext(ctx)
     if err != nil {
         panic(err)
     }
-    
+
+    var result string
+    if err := db.QueryRowContext(ctx, "SELECT VERSION()").Scan(&result); err != nil {
+        panic(err)
+    }
+
     fmt.Printf("MySQL Version: %s\n", result)
 }
 ```
@@ -138,84 +139,53 @@ func main() {
 ### Advanced Usage
 
 ```go
-// Test connection
-err := mysqlClient.TestConnection(ctx)
+provider := mysql.GetProvider()
+db, err := provider.DB(ctx)
 if err != nil {
-    log.Printf("Connection test failed: %v", err)
+    return err
 }
 
-// Get server information
-serverInfo, err := mysqlClient.GetServerInfo(ctx)
+// Use a validated single connection when you need a guaranteed-live handoff.
+conn, err := provider.ValidatedConn(ctx)
 if err != nil {
-    log.Printf("Failed to get server info: %v", err)
-} else {
-    log.Printf("Server: %s, Version: %s", 
-        serverInfo["hostname"], serverInfo["version"])
+    return err
 }
+defer conn.Close()
 
-// Execute prepared statement
-stmt, err := mysqlClient.PrepareStatement(ctx, "SELECT * FROM users WHERE id = ?")
+driverProvider := mysql.GetDriverProvider()
+entDriver, err := driverProvider(ctx)
 if err != nil {
-    log.Printf("Failed to prepare statement: %v", err)
+    return err
 }
-defer stmt.Close()
-
-// Begin transaction
-tx, err := mysqlClient.BeginTransaction(ctx)
-if err != nil {
-    log.Printf("Failed to begin transaction: %v", err)
-}
-defer tx.Rollback()
-
-// Get connection statistics
-stats := mysqlClient.GetConnectionStats()
-log.Printf("Active connections: %d, Idle: %d", 
-    stats["in_use"], stats["idle"])
+_ = entDriver
 ```
 
 ### Health Monitoring
 
 ```go
-// Check plugin health
-err := mysqlClient.CheckHealth()
-if err != nil {
+if err := mysql.CheckHealth(); err != nil {
     log.Printf("Health check failed: %v", err)
 }
 
-// Check connection status
-if mysqlClient.IsConnected() {
+if mysql.IsConnected() {
     log.Println("MySQL plugin is connected")
 } else {
     log.Println("MySQL plugin is not connected")
 }
-
-// Get detailed health status
-health := mysqlClient.GetHealthStatus()
-log.Printf("Health: %s, Last Check: %v", 
-    health.Status, health.LastChecked)
 ```
 
 ## API Reference
 
-### MySQLClient
-
-The main client interface providing access to all MySQL functionality.
-
-#### Methods
-
-- `GetMysqlConfig() *conf.Mysql` - Returns the current configuration
-- `TestConnection(ctx context.Context) error` - Tests database connectivity
-- `GetServerInfo(ctx context.Context) (map[string]interface{}, error)` - Gets server information
-- `PrepareStatement(ctx context.Context, query string) (*sql.Stmt, error)` - Prepares a statement
-- `BeginTransaction(ctx context.Context) (*sql.Tx, error)` - Begins a new transaction
-- `IsConnected() bool` - Checks connection status
-- `GetConnectionStats() map[string]interface{}` - Gets connection statistics
-- `CheckHealth() error` - Performs health check
-- `GetHealthStatus() *HealthStatus` - Gets detailed health status
+- `GetDB()` / `GetDBWithContext(ctx)` return the current plugin-managed pool.
+- `GetValidatedConn(ctx)` returns a single connection that has been pinged before handoff.
+- `GetProvider()` and `GetDriverProvider()` should be preferred for long-lived services so reconnects do not leave stale cached handles behind.
+- `GetDriver()` returns an Ent SQL driver backed by the current pool.
+- `CheckHealth()` and `IsConnected()` expose runtime readiness.
+- `GetMetricsGatherer()` returns the plugin's private Prometheus gatherer; merge it into your application's `/metrics` endpoint.
 
 ### Configuration
 
-See `conf/mysql.go` for detailed configuration structure definitions.
+See `conf/mysql.proto` for the authoritative schema.
 
 ## Connection String Format
 
@@ -256,30 +226,38 @@ The plugin supports standard MySQL DSN format:
 
 ### Prometheus Metrics
 
-The plugin exposes comprehensive Prometheus metrics:
+The plugin keeps a private Prometheus registry. Merge `mysql.GetMetricsGatherer()` into your application's `/metrics` endpoint to expose these metrics:
 
 #### Connection Pool Metrics
-- `lynx_mysql_connection_pool_max_open` - Maximum open connections
-- `lynx_mysql_connection_pool_open` - Current open connections
-- `lynx_mysql_connection_pool_in_use` - Connections in use
-- `lynx_mysql_connection_pool_idle` - Idle connections
-- `lynx_mysql_connection_pool_wait_count_total` - Total wait count
-- `lynx_mysql_connection_pool_wait_duration_seconds` - Wait duration
+- `lynx_mysql_max_open_connections`
+- `lynx_mysql_open_connections`
+- `lynx_mysql_in_use_connections`
+- `lynx_mysql_idle_connections`
+- `lynx_mysql_max_idle_connections`
+- `lynx_mysql_wait_count_total`
+- `lynx_mysql_wait_duration_seconds_total`
 
 #### Health Check Metrics
-- `lynx_mysql_health_check_total` - Total health checks
-- `lynx_mysql_health_check_success_total` - Successful health checks
-- `lynx_mysql_health_check_failure_total` - Failed health checks
+- `lynx_mysql_health_check_total`
+- `lynx_mysql_health_check_success_total`
+- `lynx_mysql_health_check_failure_total`
 
-#### Query Performance Metrics
-- `lynx_mysql_query_duration_seconds` - Query execution duration
-- `lynx_mysql_slow_queries_total` - Slow query count
-- `lynx_mysql_query_errors_total` - Query error count
+#### Connection Lifecycle Metrics
+- `lynx_mysql_connect_attempts_total`
+- `lynx_mysql_connect_retries_total`
+- `lynx_mysql_connect_success_total`
+- `lynx_mysql_connect_failures_total`
 
-#### Configuration Metrics
-- `lynx_mysql_config_max_connections` - Configured max connections
-- `lynx_mysql_config_min_connections` - Configured min connections
-- `lynx_mysql_config_ssl_enabled` - SSL status
+#### Query and Transaction Metrics
+- `lynx_mysql_query_duration_seconds`
+- `lynx_mysql_tx_duration_seconds`
+- `lynx_mysql_errors_total`
+- `lynx_mysql_slow_queries_total`
+
+Current runtime limitation:
+- Pool, health, and connect metrics are wired automatically by plugin startup/health paths.
+- Query and transaction histograms only advance when callers use the sql-sdk query monitor helpers; direct raw `*sql.DB` calls are not auto-instrumented by this plugin.
+- The plugin does not expose HTTP by itself. Your application must merge `GetMetricsGatherer()` into `/metrics`.
 
 ### Grafana Dashboard
 
@@ -295,7 +273,7 @@ The plugin includes a Grafana dashboard for monitoring:
         "type": "stat",
         "targets": [
           {
-            "expr": "lynx_mysql_connection_pool_open",
+            "expr": "lynx_mysql_open_connections",
             "legendFormat": "Open Connections"
           }
         ]
@@ -413,26 +391,23 @@ spec:
 
 ### Debug Mode
 
-Enable debug logging for detailed troubleshooting:
+Use DSN parameters and application logging for troubleshooting:
 
 ```yaml
 lynx:
   mysql:
-    dsn: "user:password@tcp(localhost:3306)/database?debug=true"
-    monitoring:
-      enable_slow_query_log: true
-      slow_query_threshold: 100ms
+    source: "user:password@tcp(localhost:3306)/database?parseTime=true&timeout=10s&readTimeout=30s&writeTimeout=30s"
 ```
 
 ### Health Check Troubleshooting
 
 ```go
-// Check detailed health status
-health := mysqlClient.GetHealthStatus()
-if !health.Healthy {
-    log.Printf("Health check failed: %s", health.Error)
-    log.Printf("Last successful check: %v", health.LastSuccess)
-    log.Printf("Check interval: %v", health.CheckInterval)
+if err := mysql.CheckHealth(); err != nil {
+    log.Printf("health check failed: %v", err)
+}
+
+if !mysql.IsConnected() {
+    log.Printf("mysql plugin is disconnected")
 }
 ```
 

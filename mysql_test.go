@@ -8,8 +8,11 @@ import (
 
 	"github.com/go-kratos/kratos/v2/config"
 	"github.com/go-kratos/kratos/v2/log"
+	"github.com/go-lynx/lynx-mysql/conf"
 	"github.com/go-lynx/lynx-sql-sdk/interfaces"
 	"github.com/go-lynx/lynx/plugins"
+	"google.golang.org/protobuf/proto"
+	"google.golang.org/protobuf/types/known/durationpb"
 )
 
 // mockRuntime is a mock implementation of plugins.Runtime for testing
@@ -84,9 +87,29 @@ type mockValue struct {
 
 func (m *mockValue) Scan(dest interface{}) error {
 	if val, ok := m.values[m.key]; ok {
-		if config, ok := dest.(*interfaces.Config); ok {
-			if cfg, ok := val.(*interfaces.Config); ok {
-				*config = *cfg
+		switch cfg := dest.(type) {
+		case *interfaces.Config:
+			if source, ok := val.(*interfaces.Config); ok {
+				*cfg = *source
+				return nil
+			}
+		case *conf.Mysql:
+			switch source := val.(type) {
+			case *conf.Mysql:
+				proto.Reset(cfg)
+				proto.Merge(cfg, source)
+				return nil
+			case *interfaces.Config:
+				cfg.Driver = source.Driver
+				cfg.Source = source.DSN
+				cfg.MaxConn = int32(source.MaxOpenConns)
+				cfg.MaxIdleConn = int32(source.MaxIdleConns)
+				if source.ConnMaxLifetime > 0 {
+					cfg.MaxLifeTime = durationpb.New(time.Duration(source.ConnMaxLifetime) * time.Second)
+				}
+				if source.ConnMaxIdleTime > 0 {
+					cfg.MaxIdleTime = durationpb.New(time.Duration(source.ConnMaxIdleTime) * time.Second)
+				}
 				return nil
 			}
 		}
@@ -290,6 +313,117 @@ func TestDBMysqlClient_DefaultConfig(t *testing.T) {
 
 	if client.config.HealthCheckInterval != 30 {
 		t.Errorf("Expected default HealthCheckInterval 30, got %d", client.config.HealthCheckInterval)
+	}
+}
+
+func TestDBMysqlClient_InitializeResources_PreservesDefaultDriver(t *testing.T) {
+	client := NewMysqlClient()
+
+	rt := &mockRuntime{
+		config: map[string]interface{}{
+			confPrefix: &conf.Mysql{
+				Source: "user:password@tcp(localhost:3306)/testdb",
+			},
+		},
+	}
+
+	if err := client.InitializeResources(rt); err != nil {
+		t.Fatalf("InitializeResources failed: %v", err)
+	}
+
+	if client.config.Driver != "mysql" {
+		t.Fatalf("expected default driver mysql, got %q", client.config.Driver)
+	}
+}
+
+func TestDBMysqlClient_InitializeResources_RebuildsConfigFromDefaults(t *testing.T) {
+	client := NewMysqlClient()
+
+	rt1 := &mockRuntime{
+		config: map[string]interface{}{
+			confPrefix: &conf.Mysql{
+				Driver:      "mysql",
+				Source:      "user:password@tcp(localhost:3306)/db1",
+				MaxConn:     50,
+				MaxIdleConn: 12,
+			},
+		},
+	}
+
+	if err := client.InitializeResources(rt1); err != nil {
+		t.Fatalf("InitializeResources failed: %v", err)
+	}
+
+	if client.config.MaxIdleConns != 12 {
+		t.Fatalf("expected MaxIdleConns 12 after first init, got %d", client.config.MaxIdleConns)
+	}
+
+	rt2 := &mockRuntime{
+		config: map[string]interface{}{
+			confPrefix: &conf.Mysql{
+				Source: "user:password@tcp(localhost:3306)/db2",
+			},
+		},
+	}
+
+	if err := client.InitializeResources(rt2); err != nil {
+		t.Fatalf("InitializeResources failed on second call: %v", err)
+	}
+
+	if client.config.DSN != "user:password@tcp(localhost:3306)/db2" {
+		t.Fatalf("expected DSN to be refreshed, got %q", client.config.DSN)
+	}
+
+	if client.config.MaxIdleConns != 5 {
+		t.Fatalf("expected second init to reset MaxIdleConns to default 5, got %d", client.config.MaxIdleConns)
+	}
+}
+
+func TestDBMysqlClient_InitializeResources_WiresMetricsRecorder(t *testing.T) {
+	client := NewMysqlClient()
+
+	rt := &mockRuntime{
+		config: map[string]interface{}{
+			confPrefix: &conf.Mysql{
+				Source: "user:password@tcp(localhost:3306)/testdb",
+			},
+		},
+	}
+
+	if err := client.InitializeResources(rt); err != nil {
+		t.Fatalf("InitializeResources failed: %v", err)
+	}
+
+	if client.GetMetricsGatherer() == nil {
+		t.Fatal("expected plugin metrics gatherer to be initialized")
+	}
+
+	if _, ok := client.SQLPlugin.GetMetricsRecorder().(*mysqlMetricsAdapter); !ok {
+		t.Fatalf("expected mysqlMetricsAdapter, got %T", client.SQLPlugin.GetMetricsRecorder())
+	}
+}
+
+func TestDBMysqlClient_CleanupTasks_Idempotent(t *testing.T) {
+	client := NewMysqlClient()
+
+	rt := &mockRuntime{
+		config: map[string]interface{}{
+			confPrefix: &conf.Mysql{
+				Source: "user:password@tcp(localhost:3306)/testdb",
+			},
+		},
+	}
+
+	if err := client.InitializeResources(rt); err != nil {
+		t.Fatalf("InitializeResources failed: %v", err)
+	}
+
+	if err := client.CleanupTasks(); err != nil {
+		t.Fatalf("first CleanupTasks failed: %v", err)
+	}
+
+	if err := client.CleanupTasks(); err != nil {
+		t.Fatalf("second CleanupTasks should be idempotent, got: %v", err)
 	}
 }
 

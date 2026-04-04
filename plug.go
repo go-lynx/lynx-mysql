@@ -10,6 +10,7 @@ import (
 	"github.com/go-lynx/lynx-sql-sdk/interfaces"
 	"github.com/go-lynx/lynx/pkg/factory"
 	"github.com/go-lynx/lynx/plugins"
+	"github.com/prometheus/client_golang/prometheus"
 )
 
 // DBProvider resolves the current pool on each call so callers do not cache a stale *sql.DB across reconnects.
@@ -170,4 +171,20 @@ func GetDriverProvider() func(ctx context.Context) (*entsql.Driver, error) {
 		}
 		return entsql.OpenDB(provider.Dialect(), db), nil
 	}
+}
+
+// GetMetricsGatherer returns the MySQL plugin's private Prometheus gatherer, or nil if the plugin is unavailable.
+// Merge this gatherer into the application's /metrics endpoint; the plugin does not expose an HTTP endpoint itself.
+func GetMetricsGatherer() prometheus.Gatherer {
+	if lynx.Lynx() == nil {
+		return nil
+	}
+	plugin := lynx.Lynx().GetPluginManager().GetPlugin(pluginName)
+	if plugin == nil {
+		return nil
+	}
+	if client, ok := plugin.(*DBMysqlClient); ok {
+		return client.GetMetricsGatherer()
+	}
+	return nil
 }
