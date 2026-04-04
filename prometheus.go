@@ -11,7 +11,8 @@ import (
 
 // PrometheusMetrics holds all Prometheus metrics for MySQL
 type PrometheusMetrics struct {
-	registry *prometheus.Registry
+	registry      *prometheus.Registry
+	defaultLabels prometheus.Labels
 
 	// Connection pool metrics
 	maxOpenConnections *prometheus.GaugeVec
@@ -78,7 +79,8 @@ func NewPrometheusMetrics(config *PrometheusConfig) *PrometheusMetrics {
 	labelNames = append(labelNames, "instance", "database")
 
 	m := &PrometheusMetrics{
-		registry: registry,
+		registry:      registry,
+		defaultLabels: prometheus.Labels{},
 
 		// Connection pool metrics
 		maxOpenConnections: prometheus.NewGaugeVec(
@@ -295,6 +297,10 @@ func NewPrometheusMetrics(config *PrometheusConfig) *PrometheusMetrics {
 		),
 	}
 
+	for k, v := range config.Labels {
+		m.defaultLabels[k] = v
+	}
+
 	// Register all metrics
 	registry.MustRegister(
 		m.maxOpenConnections,
@@ -461,10 +467,12 @@ func (m *PrometheusMetrics) GetGatherer() prometheus.Gatherer {
 
 // buildLabels builds labels for metrics
 func (m *PrometheusMetrics) buildLabels(config *conf.Mysql) prometheus.Labels {
-	labels := prometheus.Labels{
-		"instance": "mysql",
-		"database": "mysql",
+	labels := cloneLabels(m.defaultLabels)
+	if labels == nil {
+		labels = prometheus.Labels{}
 	}
+	labels["instance"] = "mysql"
+	labels["database"] = "mysql"
 
 	// Extract database name from DSN if available
 	if config != nil && config.Source != "" {

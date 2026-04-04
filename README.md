@@ -254,10 +254,75 @@ The plugin keeps a private Prometheus registry. Merge `mysql.GetMetricsGatherer(
 - `lynx_mysql_errors_total`
 - `lynx_mysql_slow_queries_total`
 
-Current runtime limitation:
-- Pool, health, and connect metrics are wired automatically by plugin startup/health paths.
-- Query and transaction histograms only advance when callers use the sql-sdk query monitor helpers; direct raw `*sql.DB` calls are not auto-instrumented by this plugin.
+Current runtime wiring:
+- Pool, health, and connect metrics are wired automatically by plugin startup, health-check, and reconnect paths.
+- Query and transaction metrics are not emitted by raw `GetDB()` / `GetDBWithContext()` usage. Calling `db.QueryContext`, `db.QueryRowContext`, `db.ExecContext`, `db.BeginTx`, `tx.Commit`, or `tx.Rollback` directly does not update these Prometheus series.
+- The current protobuf schema only exposes pool and DSN fields. There is no `lynx.mysql.prometheus` block and no `lynx.mysql.slow_query_enabled` / `slow_query_threshold` field in this runtime line, so query/slow-query metrics are not "turnkey" config features.
+- If you need query metrics now, your application must wrap SQL execution with `lynx-sql-sdk/base.QueryMonitor` and use the MySQL plugin's recorder.
+- If you need transaction duration metrics now, your application must time commit/rollback itself and call the same recorder's `RecordTx`.
 - The plugin does not expose HTTP by itself. Your application must merge `GetMetricsGatherer()` into `/metrics`.
+
+#### Which Metrics Are Automatic vs Helper-Dependent
+
+- Automatic after startup:
+  `lynx_mysql_max_open_connections`,
+  `lynx_mysql_open_connections`,
+  `lynx_mysql_in_use_connections`,
+  `lynx_mysql_idle_connections`,
+  `lynx_mysql_max_idle_connections`,
+  `lynx_mysql_wait_count_total`,
+  `lynx_mysql_wait_duration_seconds_total`,
+  `lynx_mysql_health_check_total`,
+  `lynx_mysql_health_check_success_total`,
+  `lynx_mysql_health_check_failure_total`,
+  `lynx_mysql_connect_attempts_total`,
+  `lynx_mysql_connect_retries_total`,
+  `lynx_mysql_connect_success_total`,
+  `lynx_mysql_connect_failures_total`
+- Require caller-side sql-sdk helper or recorder integration:
+  `lynx_mysql_query_duration_seconds`,
+  `lynx_mysql_errors_total`,
+  `lynx_mysql_slow_queries_total`,
+  `lynx_mysql_tx_duration_seconds`
+
+#### Typical sql-sdk Helper Integration
+
+The current module does not auto-wrap your repository methods. If you want query/error/slow-query metrics, build a `lynx-sql-sdk` monitor with the recorder exposed by the concrete MySQL plugin:
+
+```go
+import (
+    "context"
+    "fmt"
+    "time"
+
+    "github.com/go-lynx/lynx"
+    "github.com/go-lynx/lynx-mysql"
+    "github.com/go-lynx/lynx-sql-sdk/base"
+)
+
+func monitoredExec(ctx context.Context, query string, args ...interface{}) error {
+    db, err := mysql.GetDBWithContext(ctx)
+    if err != nil {
+        return err
+    }
+
+    plugin, ok := lynx.Lynx().GetPluginManager().GetPlugin("mysql.client").(*mysql.DBMysqlClient)
+    if !ok {
+        return fmt.Errorf("mysql plugin unavailable")
+    }
+
+    monitor := base.NewQueryMonitor(
+        true,
+        time.Second,
+        plugin.GetMetricsRecorder(),
+    )
+
+    _, err = monitor.MonitorExec(ctx, db, query, args)
+    return err
+}
+```
+
+For transaction metrics, the application still owns the transaction lifecycle. Time the unit of work around `BeginTx` / `Commit` / `Rollback` and call `plugin.GetMetricsRecorder().RecordTx(duration, committed)` yourself. Without that explicit recorder call, `lynx_mysql_tx_duration_seconds` stays flat even if the transaction succeeds.
 
 ### Grafana Dashboard
 
