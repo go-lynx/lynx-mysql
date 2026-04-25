@@ -4,7 +4,7 @@ lynx:
     driver: "mysql"
 
     # Canonical DSN field from conf/mysql.proto.
-    source: "user:password@tcp(localhost:3306)/app?charset=utf8mb4&parseTime=True&loc=Local&timeout=10s&readTimeout=30s&writeTimeout=30s"
+    source: ""  # Inject DSN from environment-specific config or a secret manager
 
     # Pool sizing.
     min_conn: 5

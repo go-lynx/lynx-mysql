@@ -1,18 +1,18 @@
 module github.com/go-lynx/lynx-mysql
 
-go 1.25
+go 1.26
 
-toolchain go1.25.3
+toolchain go1.26.2
 
 replace github.com/go-lynx/lynx-sql-sdk => ../lynx-sql-sdk
 
 require (
-	entgo.io/ent v0.14.5
-	github.com/go-kratos/kratos/v2 v2.9.1
+	entgo.io/ent v0.14.6
+	github.com/go-kratos/kratos/v2 v2.9.2
 	github.com/go-lynx/lynx v1.6.0-beta
-	github.com/go-lynx/lynx-sql-sdk v1.5.0
+	github.com/go-lynx/lynx-sql-sdk v0.0.0-00010101000000-000000000000
 	github.com/go-sql-driver/mysql v1.9.3
-	github.com/prometheus/client_golang v1.23.0
+	github.com/prometheus/client_golang v1.23.2
 	google.golang.org/protobuf v1.36.10
 )
 
@@ -29,18 +29,19 @@ require (
 	github.com/google/uuid v1.6.0 // indirect
 	github.com/gorilla/mux v1.8.1 // indirect
 	github.com/kelindar/event v1.5.2 // indirect
-	github.com/mattn/go-colorable v0.1.13 // indirect
-	github.com/mattn/go-isatty v0.0.19 // indirect
+	github.com/mattn/go-colorable v0.1.14 // indirect
+	github.com/mattn/go-isatty v0.0.20 // indirect
 	github.com/munnerz/goautoneg v0.0.0-20191010083416-a7dc8b61c822 // indirect
 	github.com/panjf2000/ants/v2 v2.11.3 // indirect
 	github.com/prometheus/client_model v0.6.2 // indirect
-	github.com/prometheus/common v0.65.0 // indirect
+	github.com/prometheus/common v0.66.1 // indirect
 	github.com/prometheus/procfs v0.16.1 // indirect
 	github.com/rs/zerolog v1.34.0 // indirect
 	go.opentelemetry.io/auto/sdk v1.2.1 // indirect
-	go.opentelemetry.io/otel v1.39.0 // indirect
-	go.opentelemetry.io/otel/metric v1.39.0 // indirect
-	go.opentelemetry.io/otel/trace v1.39.0 // indirect
+	go.opentelemetry.io/otel v1.40.0 // indirect
+	go.opentelemetry.io/otel/metric v1.40.0 // indirect
+	go.opentelemetry.io/otel/trace v1.40.0 // indirect
+	go.yaml.in/yaml/v2 v2.4.2 // indirect
 	golang.org/x/net v0.48.0 // indirect
 	golang.org/x/sync v0.19.0 // indirect
 	golang.org/x/sys v0.39.0 // indirect

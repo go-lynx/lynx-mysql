@@ -6,6 +6,7 @@ package mysql
 import (
 	"context"
 	"database/sql"
+	"os"
 	"testing"
 	"time"
 
@@ -209,7 +210,7 @@ func TestMySQLConnectionPool(t *testing.T) {
 // Helper functions
 
 func isMySQLAvailable() bool {
-	db, err := sql.Open("mysql", "lynx:lynx123456@tcp(localhost:3306)/lynx_test?charset=utf8mb4&parseTime=True")
+	db, err := sql.Open("mysql", mysqlIntegrationDSN())
 	if err != nil {
 		return false
 	}
@@ -230,7 +231,7 @@ func createTestRuntime(t *testing.T) plugins.Runtime {
 		values: map[string]interface{}{
 			"lynx.mysql": &interfaces.Config{
 				Driver:                "mysql",
-				DSN:                   "lynx:lynx123456@tcp(localhost:3306)/lynx_test?charset=utf8mb4&parseTime=True",
+				DSN:                   mysqlIntegrationDSN(),
 				MaxOpenConns:          10,
 				MaxIdleConns:          5,
 				ConnMaxLifetime:       3600,
@@ -246,6 +247,13 @@ func createTestRuntime(t *testing.T) plugins.Runtime {
 	rt.SetConfig(mockConfig)
 
 	return rt
+}
+
+func mysqlIntegrationDSN() string {
+	if dsn := os.Getenv("LYNX_MYSQL_TEST_DSN"); dsn != "" {
+		return dsn
+	}
+	return "lynx:lynx-local-password@tcp(localhost:3306)/lynx_test?charset=utf8mb4&parseTime=True"
 }
 
 // mockConfig implements config.Config for testing
