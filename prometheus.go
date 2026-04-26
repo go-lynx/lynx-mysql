@@ -2,6 +2,7 @@ package mysql
 
 import (
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/go-lynx/lynx-mysql/conf"
@@ -13,6 +14,8 @@ import (
 type PrometheusMetrics struct {
 	registry      *prometheus.Registry
 	defaultLabels prometheus.Labels
+	mu            sync.Mutex
+	lastCounters  poolCounterSnapshot
 
 	// Connection pool metrics
 	maxOpenConnections *prometheus.GaugeVec
@@ -49,6 +52,13 @@ type PrometheusMetrics struct {
 	connectRetries  *prometheus.CounterVec
 	connectSuccess  *prometheus.CounterVec
 	connectFailures *prometheus.CounterVec
+}
+
+type poolCounterSnapshot struct {
+	waitCount         int64
+	waitDuration      time.Duration
+	maxIdleClosed     int64
+	maxLifetimeClosed int64
 }
 
 // PrometheusConfig configuration for Prometheus metrics
@@ -336,6 +346,9 @@ func (m *PrometheusMetrics) UpdateMetrics(stats *base.ConnectionPoolStats, confi
 		return
 	}
 
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
 	labels := m.buildLabels(config)
 
 	// Update connection pool metrics
@@ -345,17 +358,46 @@ func (m *PrometheusMetrics) UpdateMetrics(stats *base.ConnectionPoolStats, confi
 	m.idleConnections.With(labels).Set(float64(stats.Idle))
 	m.maxIdleConnections.With(labels).Set(float64(stats.MaxIdleConnections))
 
-	// Update wait metrics
-	m.waitCount.With(labels).Add(float64(stats.WaitCount))
-	m.waitDuration.With(labels).Add(stats.WaitDuration.Seconds())
-
-	// Update connection close metrics
-	m.maxIdleClosed.With(labels).Add(float64(stats.MaxIdleClosed))
-	m.maxLifetimeClosed.With(labels).Add(float64(stats.MaxLifetimeClosed))
+	delta := m.counterDeltaLocked(stats)
+	m.waitCount.With(labels).Add(float64(delta.waitCount))
+	m.waitDuration.With(labels).Add(delta.waitDuration.Seconds())
+	m.maxIdleClosed.With(labels).Add(float64(delta.maxIdleClosed))
+	m.maxLifetimeClosed.With(labels).Add(float64(delta.maxLifetimeClosed))
 
 	// Update configuration metrics
 	m.configMinConnections.With(labels).Set(float64(config.MinConn))
 	m.configMaxConnections.With(labels).Set(float64(config.MaxConn))
+}
+
+func (m *PrometheusMetrics) counterDeltaLocked(stats *base.ConnectionPoolStats) poolCounterSnapshot {
+	current := poolCounterSnapshot{
+		waitCount:         stats.WaitCount,
+		waitDuration:      stats.WaitDuration,
+		maxIdleClosed:     stats.MaxIdleClosed,
+		maxLifetimeClosed: stats.MaxLifetimeClosed,
+	}
+	delta := poolCounterSnapshot{
+		waitCount:         monotonicDelta(current.waitCount, m.lastCounters.waitCount),
+		waitDuration:      monotonicDurationDelta(current.waitDuration, m.lastCounters.waitDuration),
+		maxIdleClosed:     monotonicDelta(current.maxIdleClosed, m.lastCounters.maxIdleClosed),
+		maxLifetimeClosed: monotonicDelta(current.maxLifetimeClosed, m.lastCounters.maxLifetimeClosed),
+	}
+	m.lastCounters = current
+	return delta
+}
+
+func monotonicDelta(current, previous int64) int64 {
+	if current < previous {
+		return current
+	}
+	return current - previous
+}
+
+func monotonicDurationDelta(current, previous time.Duration) time.Duration {
+	if current < previous {
+		return current
+	}
+	return current - previous
 }
 
 // RecordHealthCheck records health check result

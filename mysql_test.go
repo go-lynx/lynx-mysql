@@ -9,8 +9,10 @@ import (
 	"github.com/go-kratos/kratos/v2/config"
 	"github.com/go-kratos/kratos/v2/log"
 	"github.com/go-lynx/lynx-mysql/conf"
+	"github.com/go-lynx/lynx-sql-sdk/base"
 	"github.com/go-lynx/lynx-sql-sdk/interfaces"
 	"github.com/go-lynx/lynx/plugins"
+	dto "github.com/prometheus/client_model/go"
 	"google.golang.org/protobuf/proto"
 	"google.golang.org/protobuf/types/known/durationpb"
 )
@@ -403,6 +405,56 @@ func TestDBMysqlClient_InitializeResources_WiresMetricsRecorder(t *testing.T) {
 	}
 }
 
+func TestPrometheusMetrics_UpdateMetricsUsesCounterDeltas(t *testing.T) {
+	metrics := NewPrometheusMetrics(createPrometheusConfig(&conf.Mysql{
+		Driver: "mysql",
+		Source: "user:password@tcp(localhost:3306)/testdb",
+	}))
+	cfg := &conf.Mysql{Source: "user:password@tcp(localhost:3306)/testdb"}
+	stats := &base.ConnectionPoolStats{
+		MaxOpenConnections: 10,
+		OpenConnections:    4,
+		InUse:              2,
+		Idle:               2,
+		MaxIdleConnections: 5,
+		WaitCount:          7,
+		WaitDuration:       2 * time.Second,
+		MaxIdleClosed:      3,
+		MaxLifetimeClosed:  4,
+	}
+
+	metrics.UpdateMetrics(stats, cfg)
+	metrics.UpdateMetrics(stats, cfg)
+
+	if got := gatherMetricValue(t, metrics.GetGatherer(), "lynx_mysql_wait_count_total"); got != 7 {
+		t.Fatalf("expected wait_count counter to stay at 7 after duplicate snapshot, got %v", got)
+	}
+	if got := gatherMetricValue(t, metrics.GetGatherer(), "lynx_mysql_wait_duration_seconds_total"); got != 2 {
+		t.Fatalf("expected wait_duration counter to stay at 2 after duplicate snapshot, got %v", got)
+	}
+	if got := gatherMetricValue(t, metrics.GetGatherer(), "lynx_mysql_max_idle_closed_total"); got != 3 {
+		t.Fatalf("expected max_idle_closed counter to stay at 3 after duplicate snapshot, got %v", got)
+	}
+	if got := gatherMetricValue(t, metrics.GetGatherer(), "lynx_mysql_max_lifetime_closed_total"); got != 4 {
+		t.Fatalf("expected max_lifetime_closed counter to stay at 4 after duplicate snapshot, got %v", got)
+	}
+}
+
+func TestPrometheusMetrics_UpdateMetricsHandlesCounterReset(t *testing.T) {
+	metrics := NewPrometheusMetrics(createPrometheusConfig(&conf.Mysql{Driver: "mysql"}))
+	cfg := &conf.Mysql{}
+
+	metrics.UpdateMetrics(&base.ConnectionPoolStats{WaitCount: 10, WaitDuration: 10 * time.Second}, cfg)
+	metrics.UpdateMetrics(&base.ConnectionPoolStats{WaitCount: 2, WaitDuration: 3 * time.Second}, cfg)
+
+	if got := gatherMetricValue(t, metrics.GetGatherer(), "lynx_mysql_wait_count_total"); got != 12 {
+		t.Fatalf("expected reset snapshot to add current wait_count, got %v", got)
+	}
+	if got := gatherMetricValue(t, metrics.GetGatherer(), "lynx_mysql_wait_duration_seconds_total"); got != 13 {
+		t.Fatalf("expected reset snapshot to add current wait_duration, got %v", got)
+	}
+}
+
 func TestDBMysqlClient_CleanupTasks_Idempotent(t *testing.T) {
 	client := NewMysqlClient()
 
@@ -425,6 +477,33 @@ func TestDBMysqlClient_CleanupTasks_Idempotent(t *testing.T) {
 	if err := client.CleanupTasks(); err != nil {
 		t.Fatalf("second CleanupTasks should be idempotent, got: %v", err)
 	}
+}
+
+func gatherMetricValue(t *testing.T, gatherer interface {
+	Gather() ([]*dto.MetricFamily, error)
+}, name string) float64 {
+	t.Helper()
+	families, err := gatherer.Gather()
+	if err != nil {
+		t.Fatalf("gather metrics: %v", err)
+	}
+	for _, family := range families {
+		if family.GetName() != name {
+			continue
+		}
+		var total float64
+		for _, metric := range family.GetMetric() {
+			if metric.GetCounter() != nil {
+				total += metric.GetCounter().GetValue()
+			}
+			if metric.GetGauge() != nil {
+				total += metric.GetGauge().GetValue()
+			}
+		}
+		return total
+	}
+	t.Fatalf("metric %s not found", name)
+	return 0
 }
 
 func TestDBMysqlClient_ConfigurationValidation(t *testing.T) {

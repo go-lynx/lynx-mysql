@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"sync"
 	"time"
 
 	kratosconfig "github.com/go-kratos/kratos/v2/config"
@@ -13,6 +14,7 @@ import (
 	"github.com/go-lynx/lynx/log"
 	"github.com/go-lynx/lynx/plugins"
 	"github.com/prometheus/client_golang/prometheus"
+	"google.golang.org/protobuf/proto"
 
 	// MySQL driver
 	_ "github.com/go-sql-driver/mysql"
@@ -33,6 +35,9 @@ type DBMysqlClient struct {
 	pbConfig          *conf.Mysql // protobuf configuration
 	prometheusMetrics *PrometheusMetrics
 	metricsCancel     context.CancelFunc
+	metricsWG         sync.WaitGroup
+	lifecycleMu       sync.Mutex
+	mu                sync.RWMutex
 }
 
 func defaultConfig() *interfaces.Config {
@@ -77,9 +82,15 @@ func NewMysqlClient() *DBMysqlClient {
 
 // InitializeResources loads protobuf configuration and initializes resources
 func (m *DBMysqlClient) InitializeResources(rt plugins.Runtime) error {
-	if m.metricsCancel != nil {
-		m.metricsCancel()
-		m.metricsCancel = nil
+	m.lifecycleMu.Lock()
+	defer m.lifecycleMu.Unlock()
+
+	m.stopMetricsUpdater()
+	m.mu.RLock()
+	currentSQLPlugin := m.SQLPlugin
+	m.mu.RUnlock()
+	if currentSQLPlugin != nil && currentSQLPlugin.IsConnected() {
+		return fmt.Errorf("cannot reinitialize mysql plugin while database connection is active")
 	}
 
 	// Load protobuf configuration to a temporary variable first
@@ -141,50 +152,69 @@ func (m *DBMysqlClient) InitializeResources(rt plugins.Runtime) error {
 		config.WarmupConns = config.MaxOpenConns
 	}
 
-	m.pbConfig = pbConfig
-	m.config = config
-	m.prometheusMetrics = nil
-	m.metricsCancel = nil
-	m.SQLPlugin = newSQLPlugin(config)
+	sqlPlugin := newSQLPlugin(config)
 
-	if err := m.SQLPlugin.InitializeResources(&runtimeConfigAdapter{
+	if err := sqlPlugin.InitializeResources(&runtimeConfigAdapter{
 		Runtime: rt,
 		config:  config,
 	}); err != nil {
 		return err
 	}
 
-	m.prometheusMetrics = NewPrometheusMetrics(createPrometheusConfig(pbConfig))
-	m.SQLPlugin.SetMetricsRecorder(newMysqlMetricsAdapter(m.prometheusMetrics, m.pbConfig))
+	metrics := NewPrometheusMetrics(createPrometheusConfig(pbConfig))
+	sqlPlugin.SetMetricsRecorder(newMysqlMetricsAdapter(metrics, cloneMysqlConfig(pbConfig)))
+
+	m.mu.Lock()
+	m.pbConfig = pbConfig
+	m.config = config
+	m.prometheusMetrics = metrics
+	m.SQLPlugin = sqlPlugin
+	m.mu.Unlock()
 
 	return nil
 }
 
 // StartupTasks initializes database connection
 func (m *DBMysqlClient) StartupTasks() error {
+	m.lifecycleMu.Lock()
+	defer m.lifecycleMu.Unlock()
+
 	log.Infof("initializing mysql database connection")
 
-	if err := m.SQLPlugin.StartupTasks(); err != nil {
+	m.mu.RLock()
+	sqlPlugin := m.SQLPlugin
+	metrics := m.prometheusMetrics
+	pbConfig := cloneMysqlConfig(m.pbConfig)
+	config := m.config
+	m.mu.RUnlock()
+
+	if sqlPlugin == nil {
+		return fmt.Errorf("mysql SQL plugin is not initialized")
+	}
+
+	if err := sqlPlugin.StartupTasks(); err != nil {
 		return err
 	}
 
-	if m.prometheusMetrics != nil {
-		if m.metricsCancel != nil {
-			m.metricsCancel()
-		}
-		m.prometheusMetrics.UpdateMetrics(m.SQLPlugin.GetStats(), m.pbConfig)
+	if metrics != nil {
+		m.stopMetricsUpdater()
+		metrics.UpdateMetrics(sqlPlugin.GetStats(), pbConfig)
 
 		ctx, cancel := context.WithCancel(context.Background())
+		m.mu.Lock()
 		m.metricsCancel = cancel
-		go m.runPoolStatsUpdater(ctx)
+		m.mu.Unlock()
+		m.metricsWG.Add(1)
+		go m.runPoolStatsUpdater(ctx, sqlPlugin, metrics, pbConfig)
 	}
 
 	log.Infof("mysql database successfully initialized with connection pool: max_open=%d, max_idle=%d",
-		m.config.MaxOpenConns, m.config.MaxIdleConns)
+		config.MaxOpenConns, config.MaxIdleConns)
 	return nil
 }
 
-func (m *DBMysqlClient) runPoolStatsUpdater(ctx context.Context) {
+func (m *DBMysqlClient) runPoolStatsUpdater(ctx context.Context, sqlPlugin *base.SQLPlugin, metrics *PrometheusMetrics, pbConfig *conf.Mysql) {
+	defer m.metricsWG.Done()
 	ticker := time.NewTicker(15 * time.Second)
 	defer ticker.Stop()
 
@@ -193,8 +223,8 @@ func (m *DBMysqlClient) runPoolStatsUpdater(ctx context.Context) {
 		case <-ctx.Done():
 			return
 		case <-ticker.C:
-			if m.prometheusMetrics != nil && m.SQLPlugin != nil {
-				m.prometheusMetrics.UpdateMetrics(m.SQLPlugin.GetStats(), m.pbConfig)
+			if metrics != nil && sqlPlugin != nil {
+				metrics.UpdateMetrics(sqlPlugin.GetStats(), pbConfig)
 			}
 		}
 	}
@@ -202,25 +232,53 @@ func (m *DBMysqlClient) runPoolStatsUpdater(ctx context.Context) {
 
 // CleanupTasks gracefully closes database connection
 func (m *DBMysqlClient) CleanupTasks() error {
-	if m.metricsCancel != nil {
-		m.metricsCancel()
-		m.metricsCancel = nil
-	}
+	m.lifecycleMu.Lock()
+	defer m.lifecycleMu.Unlock()
+
+	m.stopMetricsUpdater()
 
 	log.Infof("closing mysql database connection")
-	err := m.SQLPlugin.CleanupTasks()
+	m.mu.RLock()
+	sqlPlugin := m.SQLPlugin
+	m.mu.RUnlock()
+	if sqlPlugin == nil {
+		return nil
+	}
+	err := sqlPlugin.CleanupTasks()
 	if errors.Is(err, base.ErrAlreadyClosed) {
 		return nil
 	}
 	return err
 }
 
+func (m *DBMysqlClient) stopMetricsUpdater() {
+	m.mu.Lock()
+	cancel := m.metricsCancel
+	m.metricsCancel = nil
+	m.mu.Unlock()
+
+	if cancel != nil {
+		cancel()
+		m.metricsWG.Wait()
+	}
+}
+
 // GetMetricsGatherer returns the Prometheus Gatherer for this plugin's metrics, or nil if metrics are unavailable.
 func (m *DBMysqlClient) GetMetricsGatherer() prometheus.Gatherer {
-	if m.prometheusMetrics == nil {
+	m.mu.RLock()
+	metrics := m.prometheusMetrics
+	m.mu.RUnlock()
+	if metrics == nil {
 		return nil
 	}
-	return m.prometheusMetrics.GetGatherer()
+	return metrics.GetGatherer()
+}
+
+func cloneMysqlConfig(cfg *conf.Mysql) *conf.Mysql {
+	if cfg == nil {
+		return nil
+	}
+	return proto.Clone(cfg).(*conf.Mysql)
 }
 
 type runtimeConfigAdapter struct {
