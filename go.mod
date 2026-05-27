@@ -9,10 +9,11 @@ replace github.com/go-lynx/lynx-sql-sdk => ../lynx-sql-sdk
 require (
 	entgo.io/ent v0.14.6
 	github.com/go-kratos/kratos/v2 v2.9.2
-	github.com/go-lynx/lynx v1.6.0-beta
+	github.com/go-lynx/lynx v1.6.1
 	github.com/go-lynx/lynx-sql-sdk v0.0.0-00010101000000-000000000000
 	github.com/go-sql-driver/mysql v1.9.3
 	github.com/prometheus/client_golang v1.23.2
+	github.com/prometheus/client_model v0.6.2
 	google.golang.org/protobuf v1.36.10
 )
 
@@ -33,7 +34,6 @@ require (
 	github.com/mattn/go-isatty v0.0.20 // indirect
 	github.com/munnerz/goautoneg v0.0.0-20191010083416-a7dc8b61c822 // indirect
 	github.com/panjf2000/ants/v2 v2.11.3 // indirect
-	github.com/prometheus/client_model v0.6.2 // indirect
 	github.com/prometheus/common v0.66.1 // indirect
 	github.com/prometheus/procfs v0.16.1 // indirect
 	github.com/rs/zerolog v1.34.0 // indirect
