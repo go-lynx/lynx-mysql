@@ -219,6 +219,12 @@ func (m *DBMysqlClient) StartupTasks() error {
 
 func (m *DBMysqlClient) runPoolStatsUpdater(ctx context.Context, sqlPlugin *base.SQLPlugin, metrics *PrometheusMetrics, pbConfig *conf.Mysql) {
 	defer m.metricsWG.Done()
+	defer func() {
+		if r := recover(); r != nil {
+			log.Errorf("panic in mysql metrics updater goroutine: %v", r)
+		}
+	}()
+
 	ticker := time.NewTicker(15 * time.Second)
 	defer ticker.Stop()
 
