@@ -19,7 +19,7 @@ import (
 
 // mockRuntime is a mock implementation of plugins.Runtime for testing
 type mockRuntime struct {
-	config map[string]interface{}
+	config map[string]any
 }
 
 func (m *mockRuntime) GetConfig() config.Config {
@@ -67,7 +67,7 @@ func (m *mockRuntime) UnregisterSharedResource(name string) error               
 func (m *mockRuntime) WithPluginContext(pluginName string) plugins.Runtime                    { return m }
 
 type mockConfig struct {
-	values map[string]interface{}
+	values map[string]any
 }
 
 func (m *mockConfig) Value(key string) config.Value {
@@ -84,10 +84,10 @@ func (m *mockConfig) Close() error                              { return nil }
 
 type mockValue struct {
 	key    string
-	values map[string]interface{}
+	values map[string]any
 }
 
-func (m *mockValue) Scan(dest interface{}) error {
+func (m *mockValue) Scan(dest any) error {
 	if val, ok := m.values[m.key]; ok {
 		switch cfg := dest.(type) {
 		case *interfaces.Config:
@@ -157,7 +157,7 @@ func TestDBMysqlClient_InitializeResources(t *testing.T) {
 	}
 
 	rt := &mockRuntime{
-		config: map[string]interface{}{
+		config: map[string]any{
 			confPrefix: config,
 		},
 	}
@@ -189,7 +189,7 @@ func TestDBMysqlClient_StartupTasks(t *testing.T) {
 	}
 
 	rt := &mockRuntime{
-		config: map[string]interface{}{
+		config: map[string]any{
 			confPrefix: config,
 		},
 	}
@@ -225,7 +225,7 @@ func TestDBMysqlClient_CleanupTasks(t *testing.T) {
 	}
 
 	rt := &mockRuntime{
-		config: map[string]interface{}{
+		config: map[string]any{
 			confPrefix: config,
 		},
 	}
@@ -278,7 +278,7 @@ func TestDBMysqlClient_GetDialect(t *testing.T) {
 	}
 
 	rt := &mockRuntime{
-		config: map[string]interface{}{
+		config: map[string]any{
 			confPrefix: config,
 		},
 	}
@@ -322,7 +322,7 @@ func TestDBMysqlClient_InitializeResources_PreservesDefaultDriver(t *testing.T) 
 	client := NewMysqlClient()
 
 	rt := &mockRuntime{
-		config: map[string]interface{}{
+		config: map[string]any{
 			confPrefix: &conf.Mysql{
 				Source: "user:password@tcp(localhost:3306)/testdb",
 			},
@@ -342,7 +342,7 @@ func TestDBMysqlClient_InitializeResources_RebuildsConfigFromDefaults(t *testing
 	client := NewMysqlClient()
 
 	rt1 := &mockRuntime{
-		config: map[string]interface{}{
+		config: map[string]any{
 			confPrefix: &conf.Mysql{
 				Driver:      "mysql",
 				Source:      "user:password@tcp(localhost:3306)/db1",
@@ -361,7 +361,7 @@ func TestDBMysqlClient_InitializeResources_RebuildsConfigFromDefaults(t *testing
 	}
 
 	rt2 := &mockRuntime{
-		config: map[string]interface{}{
+		config: map[string]any{
 			confPrefix: &conf.Mysql{
 				Source: "user:password@tcp(localhost:3306)/db2",
 			},
@@ -385,7 +385,7 @@ func TestDBMysqlClient_InitializeResources_WiresMetricsRecorder(t *testing.T) {
 	client := NewMysqlClient()
 
 	rt := &mockRuntime{
-		config: map[string]interface{}{
+		config: map[string]any{
 			confPrefix: &conf.Mysql{
 				Source: "user:password@tcp(localhost:3306)/testdb",
 			},
@@ -459,7 +459,7 @@ func TestDBMysqlClient_CleanupTasks_Idempotent(t *testing.T) {
 	client := NewMysqlClient()
 
 	rt := &mockRuntime{
-		config: map[string]interface{}{
+		config: map[string]any{
 			confPrefix: &conf.Mysql{
 				Source: "user:password@tcp(localhost:3306)/testdb",
 			},
@@ -537,7 +537,7 @@ func TestDBMysqlClient_ConfigurationValidation(t *testing.T) {
 			client := NewMysqlClient()
 
 			rt := &mockRuntime{
-				config: map[string]interface{}{
+				config: map[string]any{
 					confPrefix: tt.config,
 				},
 			}
@@ -563,7 +563,7 @@ func TestDBMysqlClient_ConcurrentAccess(t *testing.T) {
 	}
 
 	rt := &mockRuntime{
-		config: map[string]interface{}{
+		config: map[string]any{
 			confPrefix: config,
 		},
 	}
@@ -600,7 +600,7 @@ func TestDBMysqlClient_ContextSupport(t *testing.T) {
 	}
 
 	rt := &mockRuntime{
-		config: map[string]interface{}{
+		config: map[string]any{
 			confPrefix: config,
 		},
 	}
@@ -639,7 +639,7 @@ func TestDBMysqlClient_TimeoutHandling(t *testing.T) {
 	}
 
 	rt := &mockRuntime{
-		config: map[string]interface{}{
+		config: map[string]any{
 			confPrefix: config,
 		},
 	}
@@ -676,5 +676,116 @@ func TestDBMysqlClient_PluginMetadata(t *testing.T) {
 
 	if client.Description() != pluginDescription {
 		t.Errorf("Expected plugin description '%s', got '%s'", pluginDescription, client.Description())
+	}
+}
+
+// TestDBMysqlClient_ConcurrentInitializeResources verifies that concurrent calls to
+// InitializeResources do not race on shared fields (run with -race).
+func TestDBMysqlClient_ConcurrentInitializeResources(t *testing.T) {
+	const workers = 8
+	rt := &mockRuntime{
+		config: map[string]any{
+			confPrefix: &conf.Mysql{
+				Source:  "user:password@tcp(localhost:3306)/testdb",
+				MaxConn: 20,
+			},
+		},
+	}
+
+	client := NewMysqlClient()
+	errs := make(chan error, workers)
+	for i := 0; i < workers; i++ {
+		go func() {
+			errs <- client.InitializeResources(rt)
+		}()
+	}
+	for i := 0; i < workers; i++ {
+		if err := <-errs; err != nil {
+			t.Errorf("concurrent InitializeResources error: %v", err)
+		}
+	}
+}
+
+// TestDBMysqlClient_MetricsUpdaterStopsOnCleanup verifies that the metrics updater
+// goroutine is stopped and the WaitGroup is drained when CleanupTasks is called.
+func TestDBMysqlClient_MetricsUpdaterStopsOnCleanup(t *testing.T) {
+	client := NewMysqlClient()
+	rt := &mockRuntime{
+		config: map[string]any{
+			confPrefix: &conf.Mysql{
+				Source:  "user:password@tcp(localhost:3306)/testdb",
+				MaxConn: 10,
+			},
+		},
+	}
+	if err := client.InitializeResources(rt); err != nil {
+		t.Fatalf("InitializeResources: %v", err)
+	}
+
+	// Simulate a running metrics updater by starting one directly.
+	ctx, cancel := context.WithCancel(context.Background())
+	client.mu.Lock()
+	client.metricsCancel = cancel
+	client.mu.Unlock()
+	client.metricsWG.Add(1)
+	go func() {
+		defer client.metricsWG.Done()
+		<-ctx.Done()
+	}()
+
+	done := make(chan struct{})
+	go func() {
+		_ = client.CleanupTasks()
+		close(done)
+	}()
+
+	select {
+	case <-done:
+		// expected: CleanupTasks drained the WaitGroup
+	case <-time.After(2 * time.Second):
+		t.Fatal("CleanupTasks did not drain metricsWG within timeout")
+	}
+}
+
+// TestDBMysqlClient_PrometheusMetricsGatherer verifies that after InitializeResources
+// the plugin exposes a non-nil Prometheus gatherer and that the gatherer works after
+// metrics are recorded.
+func TestDBMysqlClient_PrometheusMetricsGatherer(t *testing.T) {
+	pbCfg := &conf.Mysql{
+		Source:  "user:password@tcp(localhost:3306)/testdb",
+		MaxConn: 10,
+	}
+	client := NewMysqlClient()
+	rt := &mockRuntime{
+		config: map[string]any{confPrefix: pbCfg},
+	}
+	if err := client.InitializeResources(rt); err != nil {
+		t.Fatalf("InitializeResources: %v", err)
+	}
+
+	gatherer := client.GetMetricsGatherer()
+	if gatherer == nil {
+		t.Fatal("expected non-nil Prometheus gatherer after InitializeResources")
+	}
+
+	// Seed at least one observation so metric families are emitted by the gatherer.
+	client.mu.RLock()
+	pm := client.prometheusMetrics
+	client.mu.RUnlock()
+	if pm == nil {
+		t.Fatal("expected prometheusMetrics to be non-nil after InitializeResources")
+	}
+	pm.UpdateMetrics(&base.ConnectionPoolStats{
+		MaxOpenConnections: 10,
+		OpenConnections:    1,
+		InUse:              1,
+	}, pbCfg)
+
+	families, err := gatherer.Gather()
+	if err != nil {
+		t.Fatalf("Gather() returned error: %v", err)
+	}
+	if len(families) == 0 {
+		t.Error("expected at least one metric family from the Prometheus gatherer after UpdateMetrics")
 	}
 }

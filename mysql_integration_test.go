@@ -10,8 +10,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/go-kratos/kratos/v2/config"
-	"github.com/go-lynx/lynx"
 	"github.com/go-lynx/lynx-sql-sdk/interfaces"
 	"github.com/go-lynx/lynx/plugins"
 )
@@ -226,10 +224,10 @@ func isMySQLAvailable() bool {
 }
 
 func createTestRuntime(t *testing.T) plugins.Runtime {
-	// Create a mock config
-	mockConfig := &mockConfig{
-		values: map[string]interface{}{
-			"lynx.mysql": &interfaces.Config{
+	t.Helper()
+	return &mockRuntime{
+		config: map[string]any{
+			confPrefix: &interfaces.Config{
 				Driver:                "mysql",
 				DSN:                   mysqlIntegrationDSN(),
 				MaxOpenConns:          10,
@@ -241,12 +239,6 @@ func createTestRuntime(t *testing.T) plugins.Runtime {
 			},
 		},
 	}
-
-	// Create runtime
-	rt := lynx.NewTypedRuntimePlugin()
-	rt.SetConfig(mockConfig)
-
-	return rt
 }
 
 func mysqlIntegrationDSN() string {
@@ -256,60 +248,3 @@ func mysqlIntegrationDSN() string {
 	return "lynx:lynx-local-password@tcp(localhost:3306)/lynx_test?charset=utf8mb4&parseTime=True"
 }
 
-// mockConfig implements config.Config for testing
-type mockConfig struct {
-	values map[string]interface{}
-}
-
-func (m *mockConfig) Value(key string) config.Value {
-	return &mockValue{key: key, values: m.values}
-}
-
-type mockValue struct {
-	key    string
-	values map[string]interface{}
-}
-
-func (m *mockValue) Scan(dest interface{}) error {
-	if val, ok := m.values[m.key]; ok {
-		if cfg, ok := dest.(*interfaces.Config); ok {
-			if configVal, ok := val.(*interfaces.Config); ok {
-				*cfg = *configVal
-				return nil
-			}
-		}
-	}
-	return nil
-}
-
-func (m *mockValue) String() (string, error) {
-	return "", nil
-}
-
-func (m *mockValue) Bool() (bool, error) {
-	return false, nil
-}
-
-func (m *mockValue) Int() (int64, error) {
-	return 0, nil
-}
-
-func (m *mockValue) Float() (float64, error) {
-	return 0, nil
-}
-
-func (m *mockValue) Duration() (time.Duration, error) {
-	return 0, nil
-}
-
-func (m *mockConfig) Load() error {
-	return nil
-}
-
-func (m *mockConfig) Watch(key string, o config.Observer) error {
-	return nil
-}
-
-func (m *mockConfig) Close() error {
-	return nil
-}
