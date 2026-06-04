@@ -22,15 +22,14 @@ type DBProvider interface {
 
 type dbProvider struct{}
 
-// init function registers the MySQL plugin to the global plugin factory.
-// This function is automatically called when the package is imported.
+// init registers the MySQL plugin with the global factory on import.
 func init() {
 	factory.GlobalTypedFactory().RegisterPlugin(pluginName, confPrefix, func() plugins.Plugin {
 		return NewMysqlClient()
 	})
 }
 
-// GetDB gets the database connection from the MySQL plugin
+// GetDB returns the underlying *sql.DB from the MySQL plugin.
 func GetDB() (*sql.DB, error) {
 	if lynx.Lynx() == nil {
 		return nil, fmt.Errorf("lynx not initialized")
@@ -45,7 +44,7 @@ func GetDB() (*sql.DB, error) {
 	return nil, fmt.Errorf("plugin %s is not a SQLPlugin", pluginName)
 }
 
-// GetDBWithContext gets the database connection from the MySQL plugin with context support.
+// GetDBWithContext returns the underlying *sql.DB, checked against the provided context.
 func GetDBWithContext(ctx context.Context) (*sql.DB, error) {
 	if lynx.Lynx() == nil {
 		return nil, fmt.Errorf("lynx not initialized")
