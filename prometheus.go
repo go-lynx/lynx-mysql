@@ -2,7 +2,6 @@ package mysql
 
 import (
 	"strings"
-	"sync"
 	"time"
 
 	"github.com/go-lynx/lynx-mysql/conf"
@@ -14,8 +13,6 @@ import (
 type PrometheusMetrics struct {
 	registry      *prometheus.Registry
 	defaultLabels prometheus.Labels
-	mu            sync.Mutex
-	lastCounters  poolCounterSnapshot
 
 	// Connection pool metrics
 	maxOpenConnections *prometheus.GaugeVec
@@ -24,13 +21,13 @@ type PrometheusMetrics struct {
 	idleConnections    *prometheus.GaugeVec
 	maxIdleConnections *prometheus.GaugeVec
 
-	// Wait metrics
-	waitCount    *prometheus.CounterVec
-	waitDuration *prometheus.CounterVec
+	// Wait metrics (Gauge: DBStats returns cumulative totals; use Set to avoid double-counting on each tick)
+	waitCount    *prometheus.GaugeVec
+	waitDuration *prometheus.GaugeVec
 
-	// Connection close metrics
-	maxIdleClosed     *prometheus.CounterVec
-	maxLifetimeClosed *prometheus.CounterVec
+	// Connection close metrics (Gauge: cumulative totals from DBStats)
+	maxIdleClosed     *prometheus.GaugeVec
+	maxLifetimeClosed *prometheus.GaugeVec
 
 	// Health check metrics
 	healthCheckTotal   *prometheus.CounterVec
@@ -52,13 +49,6 @@ type PrometheusMetrics struct {
 	connectRetries  *prometheus.CounterVec
 	connectSuccess  *prometheus.CounterVec
 	connectFailures *prometheus.CounterVec
-}
-
-type poolCounterSnapshot struct {
-	waitCount         int64
-	waitDuration      time.Duration
-	maxIdleClosed     int64
-	maxLifetimeClosed int64
 }
 
 // PrometheusConfig configuration for Prometheus metrics
@@ -139,42 +129,42 @@ func NewPrometheusMetrics(config *PrometheusConfig) *PrometheusMetrics {
 			labelNames,
 		),
 
-		// Wait metrics
-		waitCount: prometheus.NewCounterVec(
-			prometheus.CounterOpts{
+		// Wait metrics (Gauge: DBStats returns cumulative totals; use Set to avoid double-counting on each tick)
+		waitCount: prometheus.NewGaugeVec(
+			prometheus.GaugeOpts{
 				Namespace: config.Namespace,
 				Subsystem: config.Subsystem,
 				Name:      "wait_count_total",
-				Help:      "The total number of connections waited for",
+				Help:      "The total number of connections waited for (cumulative, from DBStats)",
 			},
 			labelNames,
 		),
-		waitDuration: prometheus.NewCounterVec(
-			prometheus.CounterOpts{
+		waitDuration: prometheus.NewGaugeVec(
+			prometheus.GaugeOpts{
 				Namespace: config.Namespace,
 				Subsystem: config.Subsystem,
 				Name:      "wait_duration_seconds_total",
-				Help:      "The total time blocked waiting for a new connection",
+				Help:      "The total time blocked waiting for a new connection (cumulative, from DBStats)",
 			},
 			labelNames,
 		),
 
-		// Connection close metrics
-		maxIdleClosed: prometheus.NewCounterVec(
-			prometheus.CounterOpts{
+		// Connection close metrics (Gauge: cumulative totals from DBStats)
+		maxIdleClosed: prometheus.NewGaugeVec(
+			prometheus.GaugeOpts{
 				Namespace: config.Namespace,
 				Subsystem: config.Subsystem,
 				Name:      "max_idle_closed_total",
-				Help:      "The total number of connections closed due to SetMaxIdleConns",
+				Help:      "The total number of connections closed due to SetMaxIdleConns (cumulative, from DBStats)",
 			},
 			labelNames,
 		),
-		maxLifetimeClosed: prometheus.NewCounterVec(
-			prometheus.CounterOpts{
+		maxLifetimeClosed: prometheus.NewGaugeVec(
+			prometheus.GaugeOpts{
 				Namespace: config.Namespace,
 				Subsystem: config.Subsystem,
 				Name:      "max_lifetime_closed_total",
-				Help:      "The total number of connections closed due to SetConnMaxLifetime",
+				Help:      "The total number of connections closed due to SetConnMaxLifetime (cumulative, from DBStats)",
 			},
 			labelNames,
 		),
@@ -346,58 +336,22 @@ func (m *PrometheusMetrics) UpdateMetrics(stats *base.ConnectionPoolStats, confi
 		return
 	}
 
-	m.mu.Lock()
-	defer m.mu.Unlock()
-
 	labels := m.buildLabels(config)
 
-	// Update connection pool metrics
 	m.maxOpenConnections.With(labels).Set(float64(stats.MaxOpenConnections))
 	m.openConnections.With(labels).Set(float64(stats.OpenConnections))
 	m.inUseConnections.With(labels).Set(float64(stats.InUse))
 	m.idleConnections.With(labels).Set(float64(stats.Idle))
 	m.maxIdleConnections.With(labels).Set(float64(stats.MaxIdleConnections))
 
-	delta := m.counterDeltaLocked(stats)
-	m.waitCount.With(labels).Add(float64(delta.waitCount))
-	m.waitDuration.With(labels).Add(delta.waitDuration.Seconds())
-	m.maxIdleClosed.With(labels).Add(float64(delta.maxIdleClosed))
-	m.maxLifetimeClosed.With(labels).Add(float64(delta.maxLifetimeClosed))
+	// DBStats returns cumulative totals; use Set to report current total without double-counting.
+	m.waitCount.With(labels).Set(float64(stats.WaitCount))
+	m.waitDuration.With(labels).Set(stats.WaitDuration.Seconds())
+	m.maxIdleClosed.With(labels).Set(float64(stats.MaxIdleClosed))
+	m.maxLifetimeClosed.With(labels).Set(float64(stats.MaxLifetimeClosed))
 
-	// Update configuration metrics
 	m.configMinConnections.With(labels).Set(float64(config.MinConn))
 	m.configMaxConnections.With(labels).Set(float64(config.MaxConn))
-}
-
-func (m *PrometheusMetrics) counterDeltaLocked(stats *base.ConnectionPoolStats) poolCounterSnapshot {
-	current := poolCounterSnapshot{
-		waitCount:         stats.WaitCount,
-		waitDuration:      stats.WaitDuration,
-		maxIdleClosed:     stats.MaxIdleClosed,
-		maxLifetimeClosed: stats.MaxLifetimeClosed,
-	}
-	delta := poolCounterSnapshot{
-		waitCount:         monotonicDelta(current.waitCount, m.lastCounters.waitCount),
-		waitDuration:      monotonicDurationDelta(current.waitDuration, m.lastCounters.waitDuration),
-		maxIdleClosed:     monotonicDelta(current.maxIdleClosed, m.lastCounters.maxIdleClosed),
-		maxLifetimeClosed: monotonicDelta(current.maxLifetimeClosed, m.lastCounters.maxLifetimeClosed),
-	}
-	m.lastCounters = current
-	return delta
-}
-
-func monotonicDelta(current, previous int64) int64 {
-	if current < previous {
-		return current
-	}
-	return current - previous
-}
-
-func monotonicDurationDelta(current, previous time.Duration) time.Duration {
-	if current < previous {
-		return current
-	}
-	return current - previous
 }
 
 // RecordHealthCheck records health check result
@@ -516,14 +470,42 @@ func (m *PrometheusMetrics) buildLabels(config *conf.Mysql) prometheus.Labels {
 	labels["instance"] = "mysql"
 	labels["database"] = "mysql"
 
-	// Extract database name from DSN if available
 	if config != nil && config.Source != "" {
+		if inst := m.extractInstance(config.Source); inst != "" {
+			labels["instance"] = inst
+		}
 		if dbName := m.extractDatabaseName(config.Source); dbName != "" {
 			labels["database"] = dbName
 		}
 	}
 
 	return labels
+}
+
+// extractInstance extracts the network address from a MySQL DSN.
+// Handles all go-sql-driver/mysql DSN address formats:
+//   - user:pass@tcp(host:port)/db  → host:port
+//   - user:pass@unix(/tmp/mysql.sock)/db → /tmp/mysql.sock
+//   - user:pass@host:port/db       → host:port (no explicit protocol)
+//   - host:port/db                 → host:port (no user info)
+func (m *PrometheusMetrics) extractInstance(dsn string) string {
+	// Isolate the address portion: everything after the last '@' (or the whole
+	// DSN when there is no '@', e.g. a bare host:port/dbname).
+	addrPart := dsn
+	if idx := strings.LastIndex(dsn, "@"); idx >= 0 {
+		addrPart = dsn[idx+1:]
+	}
+	// protocol(address)/dbname  — covers tcp(...) and unix(...)
+	if start := strings.Index(addrPart, "("); start >= 0 {
+		if end := strings.Index(addrPart[start:], ")"); end >= 0 {
+			return addrPart[start+1 : start+end]
+		}
+	}
+	// Bare host:port/dbname (no parentheses)
+	if slash := strings.Index(addrPart, "/"); slash >= 0 {
+		return addrPart[:slash]
+	}
+	return addrPart
 }
 
 // cloneLabels shallow copies labels for appending dimensions

@@ -440,18 +440,25 @@ func TestPrometheusMetrics_UpdateMetricsUsesCounterDeltas(t *testing.T) {
 	}
 }
 
-func TestPrometheusMetrics_UpdateMetricsHandlesCounterReset(t *testing.T) {
+// TestPrometheusMetrics_UpdateMetricsReflectsLatest verifies that wait_count and
+// wait_duration gauges always reflect the latest DBStats cumulative total, not a sum.
+// GaugeVec.Set() is used so that the gauge always mirrors the current DBStats snapshot.
+func TestPrometheusMetrics_UpdateMetricsReflectsLatest(t *testing.T) {
 	metrics := NewPrometheusMetrics(createPrometheusConfig(&conf.Mysql{Driver: "mysql"}))
 	cfg := &conf.Mysql{}
 
 	metrics.UpdateMetrics(&base.ConnectionPoolStats{WaitCount: 10, WaitDuration: 10 * time.Second}, cfg)
-	metrics.UpdateMetrics(&base.ConnectionPoolStats{WaitCount: 2, WaitDuration: 3 * time.Second}, cfg)
+	if got := gatherMetricValue(t, metrics.GetGatherer(), "lynx_mysql_wait_count_total"); got != 10 {
+		t.Fatalf("expected wait_count gauge to equal current DBStats value 10, got %v", got)
+	}
 
-	if got := gatherMetricValue(t, metrics.GetGatherer(), "lynx_mysql_wait_count_total"); got != 12 {
-		t.Fatalf("expected reset snapshot to add current wait_count, got %v", got)
+	// After a second update the gauge reflects the new current total, not the accumulated sum.
+	metrics.UpdateMetrics(&base.ConnectionPoolStats{WaitCount: 15, WaitDuration: 13 * time.Second}, cfg)
+	if got := gatherMetricValue(t, metrics.GetGatherer(), "lynx_mysql_wait_count_total"); got != 15 {
+		t.Fatalf("expected wait_count gauge to equal new DBStats value 15, got %v", got)
 	}
 	if got := gatherMetricValue(t, metrics.GetGatherer(), "lynx_mysql_wait_duration_seconds_total"); got != 13 {
-		t.Fatalf("expected reset snapshot to add current wait_duration, got %v", got)
+		t.Fatalf("expected wait_duration gauge to equal new DBStats value 13, got %v", got)
 	}
 }
 
@@ -706,9 +713,9 @@ func TestDBMysqlClient_ConcurrentInitializeResources(t *testing.T) {
 	}
 }
 
-// TestDBMysqlClient_MetricsUpdaterStopsOnCleanup verifies that the metrics updater
-// goroutine is stopped and the WaitGroup is drained when CleanupTasks is called.
-func TestDBMysqlClient_MetricsUpdaterStopsOnCleanup(t *testing.T) {
+// TestDBMysqlClient_CleanupTasksIsIdempotent verifies that CleanupTasks can be
+// called multiple times without error (pool stats reporter is managed by base).
+func TestDBMysqlClient_CleanupTasksIsIdempotent(t *testing.T) {
 	client := NewMysqlClient()
 	rt := &mockRuntime{
 		config: map[string]any{
@@ -722,28 +729,12 @@ func TestDBMysqlClient_MetricsUpdaterStopsOnCleanup(t *testing.T) {
 		t.Fatalf("InitializeResources: %v", err)
 	}
 
-	// Simulate a running metrics updater by starting one directly.
-	ctx, cancel := context.WithCancel(context.Background())
-	client.mu.Lock()
-	client.metricsCancel = cancel
-	client.mu.Unlock()
-	client.metricsWG.Add(1)
-	go func() {
-		defer client.metricsWG.Done()
-		<-ctx.Done()
-	}()
-
-	done := make(chan struct{})
-	go func() {
-		_ = client.CleanupTasks()
-		close(done)
-	}()
-
-	select {
-	case <-done:
-		// expected: CleanupTasks drained the WaitGroup
-	case <-time.After(2 * time.Second):
-		t.Fatal("CleanupTasks did not drain metricsWG within timeout")
+	// CleanupTasks on an unstarted plugin should be a no-op.
+	if err := client.CleanupTasks(); err != nil {
+		t.Fatalf("first CleanupTasks: %v", err)
+	}
+	if err := client.CleanupTasks(); err != nil {
+		t.Fatalf("second CleanupTasks should be idempotent: %v", err)
 	}
 }
 
@@ -787,5 +778,48 @@ func TestDBMysqlClient_PrometheusMetricsGatherer(t *testing.T) {
 	}
 	if len(families) == 0 {
 		t.Error("expected at least one metric family from the Prometheus gatherer after UpdateMetrics")
+	}
+}
+
+func TestExtractInstance_MySQL(t *testing.T) {
+	pm := &PrometheusMetrics{}
+	tests := []struct {
+		name     string
+		dsn      string
+		wantInst string
+	}{
+		{
+			name:     "tcp protocol explicit",
+			dsn:      "user:pass@tcp(127.0.0.1:3306)/mydb",
+			wantInst: "127.0.0.1:3306",
+		},
+		{
+			name:     "unix socket",
+			dsn:      "user:pass@unix(/tmp/mysql.sock)/mydb",
+			wantInst: "/tmp/mysql.sock",
+		},
+		{
+			name:     "no explicit protocol",
+			dsn:      "user:pass@127.0.0.1:3306/mydb",
+			wantInst: "127.0.0.1:3306",
+		},
+		{
+			name:     "no user info",
+			dsn:      "127.0.0.1:3306/mydb",
+			wantInst: "127.0.0.1:3306",
+		},
+		{
+			name:     "tcp localhost default port",
+			dsn:      "root:secret@tcp(localhost:3306)/testdb",
+			wantInst: "localhost:3306",
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := pm.extractInstance(tc.dsn); got != tc.wantInst {
+				t.Errorf("extractInstance(%q) = %q, want %q", tc.dsn, got, tc.wantInst)
+			}
+		})
 	}
 }
