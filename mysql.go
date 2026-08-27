@@ -5,6 +5,7 @@
 package mysql
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"sync"
@@ -54,7 +55,7 @@ func defaultConfig() *interfaces.Config {
 }
 
 func newSQLPlugin(config *interfaces.Config) *base.SQLPlugin {
-	return base.NewBaseSQLPlugin(
+	p := base.NewBaseSQLPlugin(
 		plugins.GeneratePluginID("", pluginName, pluginVersion),
 		pluginName,
 		pluginDescription,
@@ -63,6 +64,9 @@ func newSQLPlugin(config *interfaces.Config) *base.SQLPlugin {
 		101,
 		config,
 	)
+	// Register the stable provider so the sdk publishes the shared/private provider resources.
+	p.SetProvider(dbProvider{})
+	return p
 }
 
 // NewMysqlClient creates a new MySQL client plugin instance
@@ -134,7 +138,22 @@ func (m *DBMysqlClient) InitializeResources(rt plugins.Runtime) error {
 		config.WarmupConns = config.MaxOpenConns
 	}
 
-	sqlPlugin := newSQLPlugin(config)
+	// Reuse the SQLPlugin built by NewMysqlClient (its config is refreshed in place
+	// from `config` below); only rebuild it after it has been closed.
+	sqlPlugin := currentSQLPlugin
+	rebuilt := false
+	if sqlPlugin == nil || sqlPlugin.IsClosed() {
+		sqlPlugin = newSQLPlugin(config)
+		rebuilt = true
+	} else {
+		// The reused plugin owns m.config (see NewMysqlClient); refresh it in place
+		// so the plugin sees the freshly loaded settings.
+		m.mu.RLock()
+		existing := m.config
+		m.mu.RUnlock()
+		*existing = *config
+	}
+
 	// InitializeFromConfig applies defaults+validation without re-scanning the YAML key,
 	// preventing proto values from being silently overwritten by a second scan.
 	if err := sqlPlugin.InitializeFromConfig(rt); err != nil {
@@ -146,7 +165,11 @@ func (m *DBMysqlClient) InitializeResources(rt plugins.Runtime) error {
 
 	m.mu.Lock()
 	m.pbConfig = pbConfig
-	m.config = config
+	if rebuilt {
+		m.config = config
+	}
+	// When the plugin is reused, m.config is the plugin's own config struct and has just
+	// been refreshed in place from `config` above.
 	m.prometheusMetrics = metrics
 	m.SQLPlugin = sqlPlugin
 	m.mu.Unlock()
@@ -154,8 +177,20 @@ func (m *DBMysqlClient) InitializeResources(rt plugins.Runtime) error {
 	return nil
 }
 
-// StartupTasks initializes database connection
+// StartupTasks initializes database connection (legacy, non-cancellable
+// entrypoint; delegates to StartupTasksContext).
 func (m *DBMysqlClient) StartupTasks() error {
+	return m.StartupTasksContext(context.Background())
+}
+
+// StartupTasksContext initializes the database connection while honoring ctx.
+// The connect/ping/retry work in the embedded SQLPlugin is bound to ctx, and the
+// metrics updater is only started once the connection was established.
+func (m *DBMysqlClient) StartupTasksContext(ctx context.Context) error {
+	if err := ctx.Err(); err != nil {
+		return fmt.Errorf("mysql startup canceled before execution: %w", err)
+	}
+
 	m.lifecycleMu.Lock()
 	defer m.lifecycleMu.Unlock()
 
@@ -170,7 +205,7 @@ func (m *DBMysqlClient) StartupTasks() error {
 		return fmt.Errorf("mysql SQL plugin is not initialized")
 	}
 
-	if err := sqlPlugin.StartupTasks(); err != nil {
+	if err := sqlPlugin.StartupTasksContext(ctx); err != nil {
 		return err
 	}
 
@@ -181,6 +216,15 @@ func (m *DBMysqlClient) StartupTasks() error {
 
 // CleanupTasks gracefully closes database connection
 func (m *DBMysqlClient) CleanupTasks() error {
+	return m.CleanupTasksContext(context.Background())
+}
+
+// CleanupTasksContext gracefully closes the database connection while honoring ctx.
+func (m *DBMysqlClient) CleanupTasksContext(ctx context.Context) error {
+	if err := ctx.Err(); err != nil {
+		return fmt.Errorf("mysql cleanup canceled before execution: %w", err)
+	}
+
 	m.lifecycleMu.Lock()
 	defer m.lifecycleMu.Unlock()
 
@@ -191,7 +235,7 @@ func (m *DBMysqlClient) CleanupTasks() error {
 	if sqlPlugin == nil {
 		return nil
 	}
-	err := sqlPlugin.CleanupTasks()
+	err := sqlPlugin.CleanupTasksContext(ctx)
 	if errors.Is(err, base.ErrAlreadyClosed) {
 		return nil
 	}

@@ -247,4 +247,3 @@ func mysqlIntegrationDSN() string {
 	}
 	return "lynx:lynx-local-password@tcp(localhost:3306)/lynx_test?charset=utf8mb4&parseTime=True"
 }
-

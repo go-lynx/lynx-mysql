@@ -823,3 +823,41 @@ func TestExtractInstance_MySQL(t *testing.T) {
 		})
 	}
 }
+
+func TestDBMysqlClient_InitializeResources_ReusesSQLPluginBuiltByConstructor(t *testing.T) {
+	client := NewMysqlClient()
+	original := client.SQLPlugin
+	if original == nil {
+		t.Fatal("NewMysqlClient should build the SQL plugin")
+	}
+
+	rt := &mockRuntime{
+		config: map[string]any{
+			confPrefix: &conf.Mysql{
+				Source:  "user:password@tcp(localhost:3306)/testdb",
+				MaxConn: 7,
+			},
+		},
+	}
+
+	if err := client.InitializeResources(rt); err != nil {
+		t.Fatalf("InitializeResources failed: %v", err)
+	}
+	if client.SQLPlugin != original {
+		t.Fatal("InitializeResources must reuse the SQL plugin built by NewMysqlClient instead of building a second one")
+	}
+	if client.config.MaxOpenConns != 7 || client.config.DSN != "user:password@tcp(localhost:3306)/testdb" {
+		t.Fatalf("plugin config was not refreshed: %+v", client.config)
+	}
+
+	// Once the plugin has been closed it cannot be restarted, so a fresh one is built.
+	if err := client.CleanupTasks(); err != nil {
+		t.Fatalf("CleanupTasks failed: %v", err)
+	}
+	if err := client.InitializeResources(rt); err != nil {
+		t.Fatalf("InitializeResources after cleanup failed: %v", err)
+	}
+	if client.SQLPlugin == original {
+		t.Fatal("InitializeResources should rebuild the SQL plugin after it has been closed")
+	}
+}
